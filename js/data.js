@@ -15,9 +15,9 @@ export const QUESTIONS = [
     ["1", "Anfänger", "Wenig oder keine Erfahrung mit Krafttraining"],
     ["2", "Fortgeschritten", "Mehr als ein halbes Jahr regelmäßig trainiert"],
     ["3", "Erfahren", "Mehrere Jahre, sichere Technik"]] },
-  { f: "days", q: "An wie vielen Tagen pro Woche willst du trainieren?", o: [
-    ["2", "2 Tage", "Minimum bei wenig Zeit"], ["3", "3 Tage", "Gut für den Einstieg"], ["4", "4 Tage", "Mehr Volumen, gute Balance"],
-    ["5", "5 Tage", "Mit etwas Erfahrung"], ["6", "6 Tage", "Nur mit viel Erfahrung"]] },
+  { f: "wd", multi: true, min: 2, max: 6, q: "An welchen Tagen willst du trainieren?", h: "Wähle 2 bis 6 Tage. Lass Tage frei, an denen du schon anderen Sport machst.", o: [
+    ["0", "Montag", ""], ["1", "Dienstag", ""], ["2", "Mittwoch", ""], ["3", "Donnerstag", ""],
+    ["4", "Freitag", ""], ["5", "Samstag", ""], ["6", "Sonntag", ""]] },
   { f: "time", q: "Wie lange soll eine Einheit dauern?", o: [
     ["30", "30 Minuten", "4 Übungen"], ["45", "45 Minuten", "5 Übungen"], ["60", "60 Minuten", "6 Übungen"], ["75", "75 Minuten", "7 Übungen"]] },
   { f: "tools", multi: true, q: "Welche Trainingsgeräte hast du?", h: "Mehrfachauswahl. Übungen mit dem eigenen Körpergewicht sind immer dabei.", o: [
@@ -26,7 +26,7 @@ export const QUESTIONS = [
     ["masch", "Kraftmaschinen", "Beinpresse, Beinbeuger"], ["seil", "Springseil", ""], ["cardio", "Cardiogerät", "Laufband, Rad, Rudergerät"]] },
 ];
 
-export const DEFAULT = { goal: "fitness", focus: "ober", level: "1", days: "4", time: "60", tools: ["kb", "stange"] };
+export const DEFAULT = { goal: "fitness", focus: "ober", level: "1", wd: ["0", "2", "4", "5"], time: "60", tools: ["kb", "stange"] };
 
 export const label = (f, v) => (QUESTIONS.find(q => q.f === f).o.find(o => o[0] === v) || [, v])[1];
 

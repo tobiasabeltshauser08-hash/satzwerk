@@ -24,8 +24,11 @@ function slotCount(goal, time) {
   return Math.max(3, n);
 }
 
+// Gewählte Wochentage (0 = Montag); ältere Profile hatten nur die Anzahl der Tage
+export const trainingDays = p => p.wd ? p.wd.map(Number).sort((a, b) => a - b) : SCHEDULE[+p.days];
+
 export function buildPlan(p, overrides = {}) {
-  const days = +p.days;
+  const schedule = trainingDays(p), days = schedule.length;
   const [splitName, keys] = SPLITS[p.focus][days];
   const dayKeys = keys.split("");
   if (p.goal === "ausdauer" && days >= 3) {
@@ -37,7 +40,7 @@ export function buildPlan(p, overrides = {}) {
   const fins = FINISHERS.filter(f => available(f.t, p));
   const seen = {};
   const out = dayKeys.map((key, di) => {
-    const wd = SCHEDULE[days][di];
+    const wd = schedule[di];
     if (CARDIO[key]) return { kind: "cardio", key, name: CARDIO[key].n, wd, rows: [] };
     const tpl = TEMPLATES[key];
     const variant = seen[key] = (seen[key] ?? -1) + 1;

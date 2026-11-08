@@ -1,5 +1,5 @@
 import { QUESTIONS, DEFAULT, label, WARMUP, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG } from "./data.js";
-import { buildPlan, prescription, minutes, cardioItems, propOf, candidates } from "./plan.js";
+import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays } from "./plan.js";
 import { figure, mountFigures } from "./figure.js";
 
 const KEY = "satzwerk-v3";
@@ -160,7 +160,7 @@ function viewHistory() {
       <div><small>Ziel</small><b>${label("goal", p.goal)}</b></div>
       <div><small>Schwerpunkt</small><b>${label("focus", p.focus)}</b></div>
       <div><small>Niveau</small><b>${label("level", p.level)}</b></div>
-      <div><small>Training</small><b>${p.days} × ${p.time} min</b></div>
+      <div><small>Training</small><b>${trainingDays(p).map(i => WEEKDAYS[i]).join(", ")} · ${p.time} min</b></div>
     </div>
     <p class="hint" style="margin:10px 0 12px">Geräte: ${esc(["Körpergewicht", ...p.tools.map(t => label("tools", t))].join(", "))}</p>
     <div class="btns"><button type="button" class="btn" data-act="wizard">Fragen neu beantworten</button><button type="button" class="btn sec" data-act="reset">Fortschritt löschen</button></div>
@@ -227,6 +227,7 @@ document.addEventListener("keydown", e => { if (e.key === "Escape" && !$("#sheet
 let step = 0, draft = null;
 function openWizard() {
   draft = JSON.parse(JSON.stringify(S ? S.profile : DEFAULT));
+  if (!draft.wd) draft.wd = trainingDays(draft).map(String);
   step = 0;
   $("#app").hidden = true;
   $("#wizard").hidden = false;
@@ -244,15 +245,28 @@ function renderWizard() {
       ${Q.o.map(([v, t, d]) => `<label class="opt"><input type="${type}" name="${Q.f}" id="${Q.f}-${v}" value="${v}"${isOn(v) ? " checked" : ""}><span><b>${t}</b>${d ? `<small>${d}</small>` : ""}</span></label>`).join("")}
     </div>
     ${last && S && Object.keys(S.log).length ? `<p class="hint">Ein neuer Plan setzt die abgehakten Sätze zurück. Dein Verlauf bleibt erhalten.</p>` : ""}
+    ${Q.min ? `<p class="hint" id="wz-count" aria-live="polite"></p>` : ""}
     <div class="wz-nav">
       ${step > 0 ? `<button type="button" class="btn sec" data-act="back">Zurück</button>` : S ? `<button type="button" class="btn sec" data-act="cancel">Abbrechen</button>` : ""}
-      <button type="submit" class="btn">${last ? "Plan erstellen" : "Weiter"}</button>
+      <button type="submit" class="btn" id="wz-go">${last ? "Plan erstellen" : "Weiter"}</button>
     </div>`;
+  checkStep();
   window.scrollTo(0, 0);
+}
+// Mindest- und Höchstzahl bei Mehrfachauswahl (Trainingstage)
+function stepValid() {
+  const Q = QUESTIONS[step];
+  return !Q.min || (draft[Q.f].length >= Q.min && draft[Q.f].length <= Q.max);
+}
+function checkStep() {
+  const Q = QUESTIONS[step], n = Q.min ? draft[Q.f].length : 0;
+  $("#wz-go").disabled = !stepValid();
+  if (Q.min) $("#wz-count").textContent = n < Q.min ? `Noch ${Q.min - n} ${Q.min - n === 1 ? "Tag" : "Tage"} auswählen.` : n > Q.max ? `Höchstens ${Q.max} Tage, bitte ${n - Q.max} abwählen.` : `${n} Trainingstage pro Woche.`;
 }
 $("#wizard").addEventListener("change", e => {
   const Q = QUESTIONS[step];
   draft[Q.f] = Q.multi ? [...document.querySelectorAll(`#wizard input[name="${Q.f}"]:checked`)].map(i => i.value) : e.target.value;
+  checkStep();
 });
 $("#wizard").addEventListener("click", e => {
   const a = e.target.closest("[data-act]")?.dataset.act;
@@ -261,7 +275,9 @@ $("#wizard").addEventListener("click", e => {
 });
 $("#wizard").addEventListener("submit", e => {
   e.preventDefault();
+  if (!stepValid()) return;
   if (step < QUESTIONS.length - 1) { step++; renderWizard(); return; }
+  draft.days = String(draft.wd.length);
   S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null };
   save();
   tab = "heute";

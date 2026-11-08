@@ -32,7 +32,7 @@ Die App liegt auf GitHub Pages (HTTPS), dadurch ist sie installierbar:
 - **iPhone (Safari):** Seite öffnen → Teilen-Symbol → „Zum Home-Bildschirm“
 - **PC (Chrome/Edge):** In der Adressleiste auf das Installieren-Symbol klicken
 
-Wenn du später Dateien änderst, erhöhe in `sw.js` die Versionsnummer (`satzwerk-v1` → `satzwerk-v2`).
+Wenn du später Dateien änderst, erhöhe in `sw.js` die Versionsnummer (z. B. `satzwerk-v2` → `satzwerk-v3`).
 Sonst zeigen bereits installierte Apps weiter die alte Version.
 
 ## Test

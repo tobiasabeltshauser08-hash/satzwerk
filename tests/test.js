@@ -1,7 +1,7 @@
 // Selbsttest für den Plan-Generator und die Übungsdaten.
 // Aufruf: node tests/test.js
 import assert from 'node:assert/strict';
-import { EX, QUESTIONS, SPLITS, DEFAULT } from '../js/data.js';
+import { EX, QUESTIONS, SPLITS, DEFAULT, SCHEDULE } from '../js/data.js';
 import { buildPlan, prescription, minutes, candidates } from '../js/plan.js';
 import { ANIMS } from '../js/figure.js';
 
@@ -26,8 +26,8 @@ for (const p of new Set(EX.map(e => e.p))) {
 // Alle Profilkombinationen ergeben einen gültigen Plan
 let plans = 0;
 for (const goal of opts('goal')) for (const focus of opts('focus')) for (const level of opts('level'))
-  for (const days of opts('days')) for (const time of opts('time')) for (const tools of [[], ['kb'], ['kb', 'stange'], TOOLS]) {
-    const p = { goal, focus, level, days, time, tools };
+  for (const days of ['2', '3', '4', '5', '6']) for (const time of opts('time')) for (const tools of [[], ['kb'], ['kb', 'stange'], TOOLS]) {
+    const p = { goal, focus, level, wd: SCHEDULE[days].map(String), time, tools };
     const plan = buildPlan(p);
     plans++;
     assert.equal(plan.days.length, +days);
@@ -61,5 +61,14 @@ for (const goal of opts('goal')) for (const focus of opts('focus')) for (const l
   const plan = buildPlan(DEFAULT), r = plan.days[0].rows[0];
   assert.ok(prescription(DEFAULT, r, 3).sets < prescription(DEFAULT, r, 2).sets);
 }
+
+// Eigene Wochentage: Dienstag und Donnerstag bleiben frei
+{
+  const plan = buildPlan({ ...DEFAULT, wd: ['5', '0', '4', '2'] });
+  assert.deepEqual(plan.days.map(d => d.wd), [0, 2, 4, 5]);
+  assert.ok(!plan.days.some(d => d.wd === 1 || d.wd === 3));
+}
+// Alte Profile mit Anzahl statt Wochentagen funktionieren weiter
+assert.deepEqual(buildPlan({ ...DEFAULT, wd: undefined, days: '4' }).days.map(d => d.wd), SCHEDULE[4]);
 
 console.log(`OK: ${EX.length} Übungen, ${plans} Profile geprüft`);

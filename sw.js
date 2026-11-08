@@ -1,6 +1,6 @@
 // Service Worker: speichert die App, damit sie auch offline läuft.
 // Nach Änderungen an den Dateien die Versionsnummer erhöhen.
-const CACHE = 'satzwerk-v1';
+const CACHE = 'satzwerk-v2';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/data.js', 'js/plan.js', 'js/figure.js',
