@@ -1,6 +1,8 @@
 import { QUESTIONS, DEFAULT, label, WARMUP, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG } from "./data.js";
 import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays } from "./plan.js";
 import { figure, mountFigures } from "./figure.js";
+import { HOWTO } from "./howto.js";
+import { ACTIVITIES, actLabel, RPE, WEEK_GOAL, INTENSE_RPE, normalize, pace, summary } from "./endurance.js";
 
 const KEY = "satzwerk-v3";
 const $ = s => document.querySelector(s);
@@ -18,7 +20,7 @@ const ICON = {
 let S = null;
 try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!S || !S.profile) S = null;
-else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, ...S };
+else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], ...S };
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 let tab = "heute";
 
@@ -148,10 +150,11 @@ function viewHistory() {
       <div><small>Sätze</small><span class="big">${tot.sets}</span></div>
       <div><small>Bewegt</small><span class="big">${Math.round(tot.vol).toLocaleString("de-DE")} kg</span></div>
     </div></section>
+  ${viewCardio()}
   <section><div class="sec-h"><h2>Letzte Trainings</h2></div>`;
   h += H.length ? `<div class="rowlist">${H.slice().reverse().slice(0, 30).map(x => {
     const d = new Date(x.date);
-    return `<div><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(x.name)}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} · Woche ${x.w + 1} · ${x.sets} Sätze</small></span><span class="end">${fmt(x.dur)}</span></div>`;
+    return `<div><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(x.name)}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} · Woche ${x.w + 1} · ${x.cardio ? x.cardio.min + " min Ausdauer" + (x.cardio.km ? ", " + String(x.cardio.km).replace(".", ",") + " km" : "") : x.sets + " Sätze"}</small></span><span class="end">${fmt(x.dur)}</span></div>`;
   }).join("")}</div>`
     : `<div class="empty">${figure("hang", null)}Noch kein Training abgeschlossen.<br>Starte dein erstes unter „Training“.</div>`;
   h += `</section>
@@ -169,6 +172,62 @@ function viewHistory() {
   return h;
 }
 
+// ---------- Ausdauer ----------
+function addCardio(e) {
+  const x = normalize(e);
+  if (x) { S.cardio.push(x); S.cardio.sort((a, b) => a.date.localeCompare(b.date)); save(); }
+  return x;
+}
+const day0 = d => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; };
+function cardioForm(e, withDate = false) {
+  const f = (k, lbl, v, extra) => `<label class="field"><span>${lbl}</span><input name="${k}" type="number" inputmode="decimal" value="${esc(v ?? "")}" ${extra}></label>`;
+  return `<div class="cform">
+    <label class="field wide"><span>Aktivität</span><select name="act">${ACTIVITIES.map(([k, t]) => `<option value="${k}"${e.act === k ? " selected" : ""}>${t}</option>`).join("")}</select></label>
+    ${withDate ? `<label class="field wide"><span>Datum</span><input name="date" type="date" value="${day0(e.date || new Date())}" max="${day0(new Date())}"></label>` : ""}
+    ${f("min", "Dauer (min)", e.min, 'min="1" max="600" step="1" required')}
+    ${f("km", "Strecke (km)", e.km, 'min="0" max="500" step="0.1" placeholder="optional"')}
+    ${f("hr", "Ø Puls", e.hr, 'min="40" max="230" step="1" placeholder="optional"')}
+    <label class="field"><span>Anstrengung</span><select name="rpe">${RPE.map((t, i) => i ? `<option value="${i}"${+e.rpe === i ? " selected" : ""}>${i} · ${t}</option>` : `<option value="">–</option>`).join("")}</select></label>
+    <p class="hint wide" id="cf-err" aria-live="polite"></p>
+  </div>`;
+}
+function readCardioForm(root) {
+  const v = n => root.querySelector(`.cform [name="${n}"]`)?.value ?? "";
+  const d = v("date");
+  // Gewähltes Datum mittags speichern, damit es in jeder Zeitzone derselbe Tag bleibt
+  return { act: v("act"), min: v("min"), km: v("km"), hr: v("hr"), rpe: v("rpe"), ...(d ? { date: new Date(d + "T12:00:00").toISOString() } : {}) };
+}
+function viewCardio() {
+  const E = S.cardio, sm = summary(E);
+  const max = Math.max(WEEK_GOAL, ...sm.weeks.map(w => w.pts));
+  let h = `<section><div class="sec-h"><h2>Ausdauer</h2><span>Ziel ${WEEK_GOAL} min/Woche</span></div>
+    <div class="kvs">
+      <div><small>Diese Woche</small><span class="big">${sm.week.min} min</span></div>
+      <div><small>Wochenziel</small><span class="big">${sm.goal} %</span></div>
+      <div><small>Strecke gesamt</small><span class="big">${(Math.round(sm.total.km * 10) / 10).toLocaleString("de-DE")} km</span></div>
+      <div><small>${sm.best ? "Bestes Lauftempo" : "Ø Puls (4 Wochen)"}</small><span class="big">${sm.best ? pace(sm.best).replace(" /km", "") : sm.hr ?? "–"}</span></div>
+    </div>
+    <div class="cbars" role="img" aria-label="Ausdauer-Minuten der letzten 8 Wochen">${sm.weeks.map((w, i) => `<div><i style="height:${Math.round(w.pts / max * 100)}%"${w.pts >= WEEK_GOAL ? ' class="ok"' : ""}></i><small>${i === sm.weeks.length - 1 ? "jetzt" : w.start.toLocaleDateString("de-DE", { day: "numeric", month: "numeric" })}</small></div>`).join("")}</div>
+    <p class="hint" style="margin:8px 0 12px">Empfehlung der WHO: 150 min moderat oder 75 min intensiv pro Woche. Einheiten ab Anstrengung ${INTENSE_RPE}/10 zählen doppelt.</p>
+    <div class="btns"><button type="button" class="btn" data-act="cardio-add">Ausdauer eintragen</button></div>`;
+  if (E.length) h += `<div class="rowlist" style="margin-top:12px">${E.map((e, i) => [e, i]).reverse().slice(0, 20).map(([e, i]) => {
+    const d = new Date(e.date), extra = [e.km ? String(e.km).replace(".", ",") + " km" : "", pace(e), e.hr ? e.hr + " bpm" : "", e.rpe ? "RPE " + e.rpe : ""].filter(Boolean).join(" · ");
+    return `<button type="button" data-cardio="${i}"><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(actLabel(e.act))}${e.name ? ` <small style="display:inline">· ${esc(e.name)}</small>` : ""}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })}${extra ? " · " + extra : ""}</small></span><span class="end">${e.min} min</span></button>`;
+  }).join("")}</div>`;
+  return h + `</section>`;
+}
+function openCardioSheet(i) {
+  const e = i == null ? { act: S.cardio.length ? S.cardio[S.cardio.length - 1].act : "lauf", rpe: 5 } : S.cardio[i];
+  $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="Ausdauer"><div class="grab"></div>
+    <h2>${i == null ? "Ausdauer eintragen" : "Eintrag bearbeiten"}</h2>
+    <p class="hint">Zum Beispiel ein Lauf oder eine Radtour an einem freien Tag.</p>
+    ${cardioForm(e, true)}
+    <div class="btns">${i == null ? "" : `<button type="button" class="btn sec" data-act="c-del" data-i="${i}">Löschen</button>`}<button type="button" class="btn sec" data-act="close">Abbrechen</button><button type="button" class="btn" data-act="c-save" data-i="${i ?? ""}" style="flex:1">Speichern</button></div>
+  </div>`;
+  $("#sheet").hidden = false;
+  $("#sheet .cform [name=min]").focus({ preventScroll: true });
+}
+
 // ---------- Ereignisse Hauptansicht ----------
 document.querySelector(".tabs").addEventListener("click", e => {
   const b = e.target.closest("[data-tab]");
@@ -176,7 +235,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   tab = b.dataset.tab; render(); window.scrollTo(0, 0);
 });
 $("#view").addEventListener("click", e => {
-  const t = e.target.closest("[data-day],[data-week],[data-open-day],[data-ex],[data-act]");
+  const t = e.target.closest("[data-day],[data-week],[data-open-day],[data-ex],[data-act],[data-cardio]");
   if (!t) return;
   if (t.dataset.day) { S.day = +t.dataset.day; save(); render(); return; }
   if (t.dataset.week) { S.week = +t.dataset.week; save(); render(); return; }
@@ -185,19 +244,30 @@ $("#view").addEventListener("click", e => {
   const a = t.dataset.act;
   if (a === "start") startWorkout();
   if (a === "wizard") openWizard();
-  if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte und der Verlauf werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
+  if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte, der Verlauf und die Ausdauer-Einträge werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
   if (a === "reset-no") $("#reset-box").innerHTML = "";
-  if (a === "reset-yes") { S.log = {}; S.history = []; S.active = null; S.week = 0; save(); render(); }
+  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.active = null; S.week = 0; save(); render(); }
+  if (a === "cardio-add") openCardioSheet(null);
+  if (t.dataset.cardio) openCardioSheet(+t.dataset.cardio);
 });
 
 // ---------- Übungs-Anleitung (Sheet) ----------
+// Ausführliche Anleitung aus howto.js, sonst die Kurzfassung aus data.js
+function howHTML(ex) {
+  const h = HOWTO[ex.id] || {};
+  return `${h.m ? `<p class="muscles"><b>Trainiert:</b> ${esc(h.m)}</p>` : ""}
+    <ol class="how">${(h.s || ex.s).map(t => `<li>${esc(t)}</li>`).join("")}</ol>
+    <p class="cue"><b>Achte darauf:</b> ${esc(ex.c)}</p>
+    ${h.b ? `<div class="how-more"><h3>Atmung und Tempo</h3><p>${esc(h.b)}</p></div>` : ""}
+    ${h.f ? `<div class="how-more"><h3>Typische Fehler</h3><ul>${h.f.map(t => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+    ${h.v ? `<div class="how-more"><h3>Anpassen</h3><p>${esc(h.v)}</p></div>` : ""}`;
+}
 let sheetRi = null;
 function sheetHTML(ex, x, extra = "") {
   return `<div class="stage">${figure(ex.a, propOf(ex))}</div>
     <div><h2>${esc(ex.n)}</h2>
     <div class="chips" style="margin-top:8px"><span class="chip dark">${x.sets} × ${x.reps}${ex.side ? " pro Seite" : ""}</span><span class="chip">${x.rest} s Pause</span><span class="chip">RIR ${x.rir}</span></div></div>
-    <ol class="how">${ex.s.map(s => `<li>${esc(s)}</li>`).join("")}</ol>
-    <p class="cue"><b>Achte darauf:</b> ${esc(ex.c)}</p>${extra}`;
+    ${howHTML(ex)}${extra}`;
 }
 function openSheet(ri) {
   sheetRi = ri;
@@ -216,6 +286,17 @@ $("#sheet").addEventListener("click", e => {
   if (e.target === $("#sheet")) return closeSheet();
   const a = e.target.closest("[data-act]")?.dataset.act;
   if (a === "close") closeSheet();
+  if (a === "c-save" || a === "c-del") {
+    const b = e.target.closest("[data-act]"), i = b.dataset.i === "" ? null : +b.dataset.i;
+    if (a === "c-del") S.cardio.splice(i, 1);
+    else {
+      const x = normalize({ ...(i == null ? {} : S.cardio[i]), ...readCardioForm($("#sheet")) });
+      if (!x) { $("#cf-err").textContent = "Bitte eine Dauer in Minuten eintragen."; return; }
+      if (i == null) S.cardio.push(x); else S.cardio[i] = x;
+      S.cardio.sort((p, q) => p.date.localeCompare(q.date));
+    }
+    save(); closeSheet(); render(); return;
+  }
   if (a === "swap") {
     const pl = plan(), di = selectedDay(pl), slot = pl.days[di].rows[sheetRi].slot, k = `${di}-${slot}`;
     S.overrides[k] = (S.overrides[k] || 0) + 1; save(); render(); openSheet(sheetRi);
@@ -278,7 +359,7 @@ $("#wizard").addEventListener("submit", e => {
   if (!stepValid()) return;
   if (step < QUESTIONS.length - 1) { step++; renderWizard(); return; }
   draft.days = String(draft.wd.length);
-  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null };
+  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [] };
   save();
   tab = "heute";
   render();
@@ -291,6 +372,7 @@ function buildSteps(day, w) {
   const steps = [];
   if (day.kind === "cardio") {
     cardioItems(day, w, S.profile).forEach((t, i) => steps.push({ k: "cardio", i, text: t }));
+    steps.push({ k: "clog" });
   } else {
     steps.push({ k: "warm" });
     day.rows.forEach((r, ri) => {
@@ -340,6 +422,7 @@ function enterStep() {
     P.form = { kg: rc.kg || (last && last.kg) || (hasWeight(r.ex) ? String(kgStart(r.ex)) : ""), reps: rc.reps[s.si] || (s.si > 0 && rc.reps[s.si - 1]) || x.hi };
     if (x.timed) { P.left = P.total = x.lo; }
   }
+  if (s.k === "clog") P.cform = P.cform || { act: S.cardio.length ? S.cardio[S.cardio.length - 1].act : "lauf", min: Math.max(1, Math.round(P.elapsed / 60)), km: "", hr: "", rpe: P.day.key === "hiit" ? 8 : 4 };
   if (s.k === "done") finishWorkout();
   else persistActive();
   renderPlayer();
@@ -374,7 +457,7 @@ function renderPlayer() {
       <div class="target"><span class="big">${x.timed ? x.reps.replace(" s", "") : x.reps}</span><span class="unit">${x.timed ? "Sekunden" : "Wiederholungen"}${ex.side ? " pro Seite" : ""}</span></div>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div class="dots" aria-label="Satz ${s.si + 1} von ${x.sets}">${Array.from({ length: x.sets }, (_, i) => `<i class="${i < s.si ? "on" : ""}"${i === s.si ? ' style="background:var(--muted);border-color:var(--muted)"' : ""}></i>`).join("")}</div><span class="chip">Satz ${s.si + 1} / ${x.sets} · RIR ${x.rir}</span></div>
       <div class="stage">${figure(ex.a, propOf(ex))}</div>
-      <details class="how-box"${first ? " open" : ""}><summary>So geht's</summary><ol class="how">${ex.s.map(t => `<li>${esc(t)}</li>`).join("")}</ol><p class="cue" style="margin-bottom:14px"><b>Achte darauf:</b> ${esc(ex.c)}</p></details>
+      <details class="how-box"${first ? " open" : ""}><summary>So geht's</summary><div class="how-body">${howHTML(ex)}</div></details>
       ${x.timed ? ringHTML("Halten") : ""}
       <div class="log">
         ${hasWeight(ex) ? stepper("kg", "kg", P.form.kg || "–") : ""}
@@ -405,14 +488,21 @@ function renderPlayer() {
       <div class="sw"><span class="pl-eyebrow">Stoppuhr</span><span class="t" id="p-sw">${fmt(P.sw)}</span>
         <div class="btns"><button type="button" class="btn" data-p="sw">${P.swOn ? "Stopp" : P.sw ? "Weiter" : "Start"}</button><button type="button" class="btn sec" data-p="sw-reset">Zurücksetzen</button></div></div>
       <div class="pl-actions"><button type="button" class="btn-go" data-p="block-done">${ICON.check} Erledigt</button></div>`;
+  } else if (s.k === "clog") {
+    body = `<div><p class="pl-eyebrow">Ausdauer eintragen</p><h2 class="pl-title">Wie lief's?</h2></div>
+      <p class="hint">Mit Dauer, Strecke und Puls siehst du im Verlauf, wie sich deine Ausdauer entwickelt. Felder ohne Wert bleiben leer.</p>
+      ${cardioForm(P.cform)}
+      <div class="pl-actions"><button type="button" class="btn-go" data-p="clog-save">${ICON.check} Speichern</button><button type="button" class="btn sec block" data-p="clog-skip">Ohne Eintrag abschließen</button></div>`;
   } else if (s.k === "done") {
     const h = S.history[S.history.length - 1];
     body = `<div class="done-hero pop"><div class="check">${ICON.check}</div><p class="disp">Geschafft</p><p>${esc(P.day.name)} · Woche ${w + 1}</p></div>
       <div class="kvs">
         <div><small>Dauer</small><span class="big">${fmt(h.dur)}</span></div>
         <div><small>Sätze</small><span class="big">${h.sets}</span></div>
-        <div><small>Wiederholungen</small><span class="big">${h.reps}</span></div>
-        <div><small>Bewegt</small><span class="big">${Math.round(h.vol).toLocaleString("de-DE")} kg</span></div>
+        ${h.cardio ? `<div><small>Ausdauer</small><span class="big">${h.cardio.min} min</span></div>
+        <div><small>${h.cardio.km ? "Strecke" : "Anstrengung"}</small><span class="big">${h.cardio.km ? String(h.cardio.km).replace(".", ",") + " km" : h.cardio.rpe ? h.cardio.rpe + "/10" : "–"}</span></div>`
+        : `<div><small>Wiederholungen</small><span class="big">${h.reps}</span></div>
+        <div><small>Bewegt</small><span class="big">${Math.round(h.vol).toLocaleString("de-DE")} kg</span></div>`}
       </div>
       <p class="note">${w < 3 ? "Nächste Woche: " + WEEKS[w + 1].t : "Block geschafft. Starte einen neuen Block mit etwas mehr Gewicht."}</p>
       <div class="pl-actions"><button type="button" class="btn-go" data-p="close">Fertig</button></div>`;
@@ -497,7 +587,9 @@ function finishWorkout() {
     x.sets.forEach((ok, si) => { if (!ok) return; sets++; const n = x.reps[si] || 0; if (r.ex.u !== "s") { reps += n; vol += (parseFloat(x.kg) || 0) * n; } });
   });
   if (day.kind === "cardio") sets = cardioItems(day, w, S.profile).length;
-  S.history.push({ date: new Date().toISOString(), name: day.name, w, dur: Math.round(P.elapsed), sets, reps, vol });
+  const h = { date: new Date().toISOString(), name: day.name, w, dur: Math.round(P.elapsed), sets, reps, vol };
+  if (P.clog) h.cardio = { min: P.clog.min, km: P.clog.km, rpe: P.clog.rpe };
+  S.history.push(h);
   S.active = null;
   save();
   releaseWake();
@@ -534,8 +626,17 @@ $("#player").addEventListener("click", e => {
     case "sw-reset": P.sw = 0; P.swOn = false; renderPlayer(); break;
     case "block-done": {
       const key = s.k === "fin" ? "f" : "c" + s.i;
-      recW(P.w, P.di, key).sets[0] = true; save(); next(); break;
+      recW(P.w, P.di, key).sets[0] = true;
+      // Finisher mit Stoppuhr zählt als intensive Ausdauer
+      if (s.k === "fin" && P.sw >= 60) addCardio({ act: "zirkel", min: Math.round(P.sw / 60), rpe: 8, src: "finisher", name: P.day.name });
+      save(); next(); break;
     }
+    case "clog-save": {
+      const e = normalize({ ...readCardioForm($("#player")), src: "plan", name: P.day.name });
+      if (!e) { $("#cf-err").textContent = "Bitte eine Dauer in Minuten eintragen."; break; }
+      P.clog = addCardio(e); next(); break;
+    }
+    case "clog-skip": next(); break;
     case "inc": case "dec": {
       const r = P.day.rows[s.ri], k = b.dataset.k, d = a === "inc" ? 1 : -1;
       if (k === "kg") { const v = parseFloat(P.form.kg) || 0; P.form.kg = String(Math.max(0, +(v + d * kgStep(r.ex)).toFixed(1))); }

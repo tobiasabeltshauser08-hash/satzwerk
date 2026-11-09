@@ -266,3 +266,27 @@ details.how-box .how { padding-bottom: 14px; }
 .pop { animation: up .25s ease-out; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
 @media (min-width: 600px) { .hero h2 { font-size: 2.1rem; } .hero-top { grid-template-columns: minmax(0, 1fr) 120px; } .hero .fig { width: 120px; } }
+
+/* Ausdauer: Eingabeformular und Wochenbalken */
+.cform { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 14px 0; }
+.cform .wide { grid-column: 1 / -1; }
+.cform .hint:empty { display: none; }
+.field { display: grid; gap: 4px; min-width: 0; }
+.field span { font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.field input, .field select { width: 100%; min-width: 0; font: 500 1rem var(--f-body); color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 11px 12px; }
+.field input:focus-visible, .field select:focus-visible { outline: 2px solid var(--ink); outline-offset: 1px; }
+.player .field input, .player .field select { background: var(--surface); }
+.cbars { position: relative; display: grid; grid-template-columns: repeat(8, 1fr); gap: 6px; align-items: end; height: 120px; margin-top: 12px; padding: 12px 12px 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); }
+.cbars > div { display: grid; grid-template-rows: 1fr auto; height: 100%; text-align: center; }
+.cbars i { display: block; align-self: end; min-height: 2px; background: var(--ink); border-radius: 4px 4px 0 0; }
+.cbars i.ok { background: var(--done); }
+.cbars small { font: 500 .62rem var(--f-mono); color: var(--muted); padding: 4px 0 6px; white-space: nowrap; }
+
+/* Ausführliche Übungsanleitung */
+.muscles { margin: 0; font-size: .85rem; color: var(--muted); }
+.muscles b { color: var(--ink); font-weight: 600; }
+.how-more { display: grid; gap: 4px; }
+.how-more h3 { margin: 0; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+.how-more p { margin: 0; font-size: .9rem; }
+.how-more ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: .9rem; }
+.how-body { display: grid; gap: 14px; padding-bottom: 14px; }

@@ -72,3 +72,17 @@ for (const goal of opts('goal')) for (const focus of opts('focus')) for (const l
 assert.deepEqual(buildPlan({ ...DEFAULT, wd: undefined, days: '4' }).days.map(d => d.wd), SCHEDULE[4]);
 
 console.log(`OK: ${EX.length} Übungen, ${plans} Profile geprüft`);
+
+// Jede Übung hat eine ausführliche Anleitung
+{
+  const { HOWTO } = await import('../js/howto.js');
+  for (const e of EX) {
+    const h = HOWTO[e.id];
+    assert.ok(h, `${e.id}: ausführliche Anleitung fehlt`);
+    assert.ok(h.s.length >= 4 && h.s.length <= 6, `${e.id}: 4–6 Schritte erwartet`);
+    assert.ok(h.m && h.b && h.v, `${e.id}: Muskeln, Atmung oder Anpassung fehlt`);
+    assert.ok(h.f.length >= 2, `${e.id}: mindestens 2 typische Fehler`);
+  }
+  for (const id of Object.keys(HOWTO)) assert.ok(EX.some(e => e.id === id), `Anleitung für unbekannte Übung ${id}`);
+  console.log(`OK: ${Object.keys(HOWTO).length} ausführliche Anleitungen`);
+}
