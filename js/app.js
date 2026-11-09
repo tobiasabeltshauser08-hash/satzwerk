@@ -667,5 +667,8 @@ document.addEventListener("visibilitychange", () => {
   if (P && document.visibilityState === "visible") { tick(); requestWake(); }
 });
 
+// Laufendes Training nicht durch ein App-Update neu laden
+window.appBusy = () => !!P;
+
 // ---------- Start ----------
 render();

@@ -43,7 +43,19 @@
 
   <script type="module" src="js/app.js"></script>
   <script>
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+    // Offline-Betrieb. Bei jedem Öffnen (auch aus dem Hintergrund) nach einer neuen Version suchen;
+    // ist eine da, sofort neu laden, aber nie mitten in einer laufenden Einheit (window.appBusy).
+    if ("serviceWorker" in navigator) {
+      const hadSW = !!navigator.serviceWorker.controller;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (!hadSW) return;
+        const reload = () => { if (!(window.appBusy && window.appBusy())) { location.reload(); return true; } };
+        if (!reload()) { const t = setInterval(() => reload() && clearInterval(t), 2000); }
+      });
+      navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(reg => {
+        document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => {}); });
+      }).catch(() => {});
+    }
   </script>
 </body>
 </html>

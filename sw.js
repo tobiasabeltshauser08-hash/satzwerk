@@ -1,6 +1,6 @@
 // Service Worker: speichert die App, damit sie auch offline läuft.
 // Nach Änderungen an den Dateien die Versionsnummer erhöhen.
-const CACHE = 'satzwerk-v4';
+const CACHE = 'satzwerk-v5';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
   'js/app.js', 'js/data.js', 'js/plan.js', 'js/figure.js', 'js/endurance.js', 'js/howto.js',
@@ -9,7 +9,7 @@ const FILES = [
 const FONTS = 'satzwerk-fonts';
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
