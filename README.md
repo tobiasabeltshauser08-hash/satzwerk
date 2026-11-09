@@ -10,6 +10,8 @@ Sie lässt sich auf Handy und PC installieren und läuft danach auch offline.
 - **Stoppuhr** für die gesamte Trainingszeit, plus Timer für Halteübungen (z. B. Unterarmstütz, Toter Hang)
 - Gewicht und Wiederholungen je Satz eintragen; die App zeigt, was du letzte Woche geschafft hast
 - **Verlauf:** Trainings, Trainingszeit, Sätze und bewegtes Gewicht
+- **Laufen (eigener Tab):** 8-Wochen-Laufplan nach Ziel (Anfangen, Fit bleiben, 5 km, 10 km, Halbmarathon), Niveau und frei wählbaren Lauftagen. Konkrete Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche, mit Entlastungswochen. Mit aktueller 5-km-Zeit zeigt die App ein Zieltempo je Abschnitt
+- **Lauf-Modus:** Stoppuhr, Intervall-Ansage mit Ton, Vibration und Stimme, Restzeit des Abschnitts, GPS-Kilometerzähler mit Ø-Tempo und Ansage je Kilometer, Korrektur ±0,1 km (z. B. Laufband). Kilometer pro Woche, Jahr und gesamt
 - **Ausdauer verfolgen:** Nach jeder Cardio-Einheit Dauer, Strecke, Puls und Anstrengung eintragen; Finisher mit Stoppuhr zählen automatisch. Läufe oder Radtouren an freien Tagen lassen sich dazu eintragen. Der Verlauf zeigt Minuten pro Woche (8 Wochen), das Wochenziel nach WHO-Empfehlung (150 min moderat, intensive Minuten zählen doppelt), Strecke, bestes Lauftempo und Ø Puls
 
 Alle Daten bleiben auf dem Gerät (im Browser gespeichert).
@@ -43,6 +45,7 @@ npm test
 ```
 
 Prüft alle Übungsdaten und erzeugt Pläne für 3600 Profilkombinationen (Ziel, Schwerpunkt, Niveau, Tage, Dauer, Geräte).
+`tests/run.test.js` prüft Laufplan, Abschnitts-Zeitleiste und GPS-Strecke.
 `tests/endurance.test.js` prüft Eingaben, Tempo und die Wochenauswertung des Ausdauer-Trackings.
 
 ## Aufbau
@@ -52,6 +55,7 @@ Prüft alle Übungsdaten und erzeugt Pläne für 3600 Profilkombinationen (Ziel,
 | `js/data.js` | Fragen, Übungen mit Anleitung, Splits, Satz- und Wochenschemata |
 | `js/plan.js` | Plan-Generator: wählt Übungen nach Geräten und Niveau, passt die Einheit an die Zeit an |
 | `js/endurance.js` | Ausdauer-Tracking: Eingaben prüfen, Tempo, Wochenauswertung und Wochenziel |
+| `js/run.js` | Laufplan (8 Wochen), Zieltempo, Intervall-Zeitleiste, GPS-Strecke und Kilometer |
 | `js/figure.js` | Animierte Übungsvorlagen (Strichfigur aus Gelenkwinkeln) |
 | `js/app.js` | Oberfläche, Fragen-Assistent, Trainingsmodus mit Stoppuhr und Pausen-Timer |
 | `sw.js` | Service Worker für den Offline-Betrieb |

@@ -1,7 +1,7 @@
 {
   "name": "Satzwerk Trainingsplaner",
   "short_name": "Satzwerk",
-  "description": "Trainingsplan in 4-Wochen-Blöcken mit geführtem Training, Übungsvorlagen und Stoppuhr.",
+  "description": "Trainingsplan in 4-Wochen-Blöcken mit geführtem Training, Übungsvorlagen, Laufplan, Stoppuhr und Kilometerzähler.",
   "lang": "de",
   "start_url": "./",
   "scope": "./",

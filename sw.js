@@ -1,9 +1,9 @@
 // Service Worker: speichert die App, damit sie auch offline läuft.
 // Nach Änderungen an den Dateien die Versionsnummer erhöhen.
-const CACHE = 'satzwerk-v5';
+const CACHE = 'satzwerk-v6';
 const FILES = [
   './', 'index.html', 'style.css', 'manifest.webmanifest',
-  'js/app.js', 'js/data.js', 'js/plan.js', 'js/figure.js', 'js/endurance.js', 'js/howto.js',
+  'js/app.js', 'js/data.js', 'js/plan.js', 'js/figure.js', 'js/endurance.js', 'js/howto.js', 'js/run.js',
   'icons/icon.svg', 'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png',
 ];
 const FONTS = 'satzwerk-fonts';

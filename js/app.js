@@ -3,6 +3,7 @@ import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays } f
 import { figure, mountFigures } from "./figure.js";
 import { HOWTO } from "./howto.js";
 import { ACTIVITIES, actLabel, RPE, WEEK_GOAL, INTENSE_RPE, normalize, pace, summary } from "./endurance.js";
+import { RUN_GOALS, RUN_LEVELS, RUN_WEEKS, runPhase, SESSIONS, SEG, buildRunWeek, segAt, totalSec, targetPace, fmtPace, parseTime, trackAdd, trackResume, kmStats, MAX_ACC } from "./run.js";
 
 const KEY = "satzwerk-v3";
 const $ = s => document.querySelector(s);
@@ -20,7 +21,7 @@ const ICON = {
 let S = null;
 try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!S || !S.profile) S = null;
-else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], ...S };
+else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], run: { p: null, week: 0, done: {} }, runActive: null, ...S };
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 let tab = "heute";
 
@@ -58,9 +59,9 @@ function render() {
   $("#app").hidden = false;
   $("#wizard").hidden = true;
   const w = S.week;
-  $("#top-sub").textContent = `Woche ${w + 1} von 4 · ${WEEKS[w].n}`;
+  $("#top-sub").textContent = tab === "laufen" ? (S.run.p ? `Laufplan · Woche ${S.run.week + 1} von ${RUN_WEEKS} · ${runPhase(S.run.p.goal, S.run.week)}` : "Laufplan") : `Woche ${w + 1} von 4 · ${WEEKS[w].n}`;
   document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-current", b.dataset.tab === tab ? "page" : "false"));
-  $("#view").innerHTML = tab === "heute" ? viewToday() : tab === "woche" ? viewWeek() : viewHistory();
+  $("#view").innerHTML = tab === "heute" ? viewToday() : tab === "woche" ? viewWeek() : tab === "laufen" ? viewRun() : viewHistory();
   mountFigures($("#view"));
 }
 
@@ -154,7 +155,7 @@ function viewHistory() {
   <section><div class="sec-h"><h2>Letzte Trainings</h2></div>`;
   h += H.length ? `<div class="rowlist">${H.slice().reverse().slice(0, 30).map(x => {
     const d = new Date(x.date);
-    return `<div><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(x.name)}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} · Woche ${x.w + 1} · ${x.cardio ? x.cardio.min + " min Ausdauer" + (x.cardio.km ? ", " + String(x.cardio.km).replace(".", ",") + " km" : "") : x.sets + " Sätze"}</small></span><span class="end">${fmt(x.dur)}</span></div>`;
+    return `<div><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(x.name)}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })} · ${x.run ? "Laufen" : "Woche " + (x.w + 1)} · ${x.cardio ? x.cardio.min + " min Ausdauer" + (x.cardio.km ? ", " + String(x.cardio.km).replace(".", ",") + " km" : "") : x.sets + " Sätze"}</small></span><span class="end">${fmt(x.dur)}</span></div>`;
   }).join("")}</div>`
     : `<div class="empty">${figure("hang", null)}Noch kein Training abgeschlossen.<br>Starte dein erstes unter „Training“.</div>`;
   h += `</section>
@@ -235,7 +236,7 @@ document.querySelector(".tabs").addEventListener("click", e => {
   tab = b.dataset.tab; render(); window.scrollTo(0, 0);
 });
 $("#view").addEventListener("click", e => {
-  const t = e.target.closest("[data-day],[data-week],[data-open-day],[data-ex],[data-act],[data-cardio]");
+  const t = e.target.closest("[data-day],[data-week],[data-open-day],[data-ex],[data-act],[data-cardio],[data-rweek],[data-rsess]");
   if (!t) return;
   if (t.dataset.day) { S.day = +t.dataset.day; save(); render(); return; }
   if (t.dataset.week) { S.week = +t.dataset.week; save(); render(); return; }
@@ -246,9 +247,10 @@ $("#view").addEventListener("click", e => {
   if (a === "wizard") openWizard();
   if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte, der Verlauf und die Ausdauer-Einträge werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
   if (a === "reset-no") $("#reset-box").innerHTML = "";
-  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.active = null; S.week = 0; save(); render(); }
+  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.active = null; S.week = 0; S.run.done = {}; S.run.week = 0; S.runActive = null; save(); render(); }
   if (a === "cardio-add") openCardioSheet(null);
   if (t.dataset.cardio) openCardioSheet(+t.dataset.cardio);
+  runViewClick(t, a);
 });
 
 // ---------- Übungs-Anleitung (Sheet) ----------
@@ -297,6 +299,7 @@ $("#sheet").addEventListener("click", e => {
     }
     save(); closeSheet(); render(); return;
   }
+  if (a === "run-start") { const i = e.target.closest("[data-act]").dataset.i; closeSheet(); startRun(i === "" ? null : +i); return; }
   if (a === "swap") {
     const pl = plan(), di = selectedDay(pl), slot = pl.days[di].rows[sheetRi].slot, k = `${di}-${slot}`;
     S.overrides[k] = (S.overrides[k] || 0) + 1; save(); render(); openSheet(sheetRi);
@@ -359,7 +362,7 @@ $("#wizard").addEventListener("submit", e => {
   if (!stepValid()) return;
   if (step < QUESTIONS.length - 1) { step++; renderWizard(); return; }
   draft.days = String(draft.wd.length);
-  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [] };
+  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [], run: S ? S.run : { p: null, week: 0, done: {} }, runActive: S ? S.runActive : null };
   save();
   tab = "heute";
   render();
@@ -647,6 +650,332 @@ $("#player").addEventListener("click", e => {
   }
 });
 
+// ---------- Laufen: Plan, Kilometer, Einrichtung ----------
+const kmFmt = m => (Math.floor(m / 10) / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const km1 = k => (Math.round(k * 10) / 10).toLocaleString("de-DE");
+// Anstrengung je Abschnitt, wenn keine 5-km-Zeit bekannt ist
+const EFFORT = { run: "locker · 4–5/10", warm: "sehr locker", cool: "sehr locker", work: "zügig · 8/10", tempo: "zügig · 7/10", rest: "ganz locker traben", walk: "zügig gehen" };
+const RUN_RPE = { easy: 4, long: 5, int: 8, tempo: 7, walk: 4 };
+let runDraft = null;
+
+const runWeek = w => buildRunWeek(S.run.p, w);
+const runDone = (w, i) => !!S.run.done[`${w}-${i}`];
+function runPaceList(segs) {
+  const p = S.run.p, kinds = [...new Set(segs.map(s => s.k))];
+  return `<div class="paces">${kinds.map(k => {
+    const tp = targetPace(p.t5, k, p.goal);
+    return `<div><small>${SEG[k]}</small><b>${tp ? fmtPace(tp) + " /km" : EFFORT[k]}</b></div>`;
+  }).join("")}</div>`;
+}
+
+function viewRun() {
+  if (!S.run.p || runDraft) return viewRunSetup();
+  const p = S.run.p, w = S.run.week, wk = runWeek(w), ks = kmStats(S.cardio);
+  const doneN = wk.filter((_, i) => runDone(w, i)).length;
+  const goal = RUN_GOALS.find(g => g[0] === p.goal);
+  const nextI = wk.findIndex((_, i) => !runDone(w, i));
+  const act = S.runActive;
+  let h = `<section class="hero km-hero" aria-label="Kilometer">
+    <div><p class="eyebrow">Gelaufen diese Woche</p><p class="km-big"><span>${km1(ks.week)}</span> km</p></div>
+    <div class="km-row"><div><small>Gesamt</small><b>${km1(ks.total)} km</b></div><div><small>Dieses Jahr</small><b>${km1(ks.year)} km</b></div><div><small>Längster</small><b>${km1(ks.longest)} km</b></div></div>
+    ${act ? `<button type="button" class="btn-hero" data-act="run-resume">${ICON.play}Lauf fortsetzen (${fmt(act.t)})</button>`
+      : `<button type="button" class="btn-hero" data-act="run-free">${ICON.play}Freier Lauf mit Stoppuhr</button>`}
+  </section>
+
+  <section><div class="sec-h"><h2>Laufplan · ${esc(goal[1])}</h2><span>${doneN}/${wk.length} diese Woche</span></div>
+    <div class="weeks w8">${Array.from({ length: RUN_WEEKS }, (_, wi) => {
+      const n = runWeek(wi).length, d = runWeek(wi).filter((_, i) => runDone(wi, i)).length;
+      return `<button type="button" class="wk" data-rweek="${wi}" aria-pressed="${wi === w}" aria-label="Woche ${wi + 1}: ${runPhase(p.goal, wi)}"><span class="n">${wi + 1}</span><span class="l">${runPhase(p.goal, wi)}</span><span class="bar"><i style="width:${d / n * 100}%"></i></span></button>`;
+    }).join("")}</div>
+  </section>
+
+  <section><div class="sec-h"><h2>Woche ${w + 1} · ${runPhase(p.goal, w)}</h2><span>${wk.reduce((a, s) => a + s.min, 0)} min</span></div>
+    <div class="list">${wk.map((s, i) => `<button type="button" class="run-card${runDone(w, i) ? " ok" : ""}${i === nextI ? " next-up" : ""}" data-rsess="${i}">
+      <span class="wd">${WEEKDAYS[s.wd]}</span>
+      <span class="mid"><span class="nm">${esc(s.name)}</span><span class="rx">${esc(s.text)}</span></span>
+      <span class="st">${runDone(w, i) ? "✓" : s.min + " min"}</span>
+    </button>`).join("")}</div>
+  </section>
+  <p class="note"><strong>${runPhase(p.goal, w)}:</strong> ${p.goal === "start" ? (w === 7 ? "Geschafft: 30 Minuten am Stück. Danach kannst du mit „Fit bleiben“ weitermachen." : "Lauf so langsam, dass du dich unterhalten kannst. Gehpausen sind kein Versagen, sondern Plan.") : w === 3 ? "Weniger Umfang, damit der Körper die Belastung verarbeitet." : w === 7 ? "Kürzer und frisch werden. Am Ende der Woche: Testlauf oder Wettkampf." : "Die meisten Kilometer locker laufen; nur Intervalle und Tempo sind hart."}</p>
+
+  <section><div class="sec-h"><h2>Dein Laufprofil</h2></div>
+    <div class="kvs">
+      <div><small>Ziel</small><b>${esc(goal[1])}</b></div>
+      <div><small>Niveau</small><b>${esc(RUN_LEVELS.find(l => l[0] === p.level)[1])}</b></div>
+      <div><small>Lauftage</small><b>${p.wd.map(i => WEEKDAYS[i]).join(", ")}</b></div>
+      <div><small>5-km-Zeit</small><b>${p.t5 ? fmt(p.t5) + " min" : "–"}</b></div>
+    </div>
+    <p class="hint" style="margin:10px 0 12px">Der Kilometerzähler nutzt GPS. Lass die App beim Laufen geöffnet, der Bildschirm bleibt an. Auf dem Laufband die Strecke mit +/− eintragen.</p>
+    <div class="btns"><button type="button" class="btn sec" data-act="run-setup">Laufplan ändern</button></div>
+  </section>`;
+  return h;
+}
+
+// Vorschlag: Lauftage an Tagen ohne Krafttraining
+function initRunDraft() {
+  const lift = trainingDays(S.profile), free = [0, 1, 2, 3, 4, 5, 6].filter(i => !lift.includes(i));
+  return S.run.p ? { ...S.run.p, wd: S.run.p.wd.map(String), t5s: S.run.p.t5 ? fmt(S.run.p.t5) : "" }
+    : { goal: "fit", level: "2", wd: (free.length >= 3 ? free.slice(-3) : [1, 3, 6]).map(String), t5s: "" };
+}
+function viewRunSetup() {
+  if (!runDraft) runDraft = initRunDraft();
+  const d = runDraft;
+  const radios = (f, list) => `<div class="wz-opts">${list.map(([v, t, x]) => `<label class="opt"><input type="radio" name="r-${f}" value="${v}"${d[f] === v ? " checked" : ""}><span><b>${t}</b><small>${x}</small></span></label>`).join("")}</div>`;
+  const n = d.wd.length, ok = n >= 2 && n <= 5;
+  return `<section class="run-setup"><div class="sec-h"><h2>Laufplan erstellen</h2></div>
+    <p class="hint">8 Wochen mit konkreten Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche.</p>
+    <h3 class="q">Was ist dein Ziel?</h3>${radios("goal", RUN_GOALS)}
+    <h3 class="q">Wie viel läufst du schon?</h3>${radios("level", RUN_LEVELS)}
+    <h3 class="q">An welchen Tagen läufst du?</h3>
+    <div class="daypick" role="group" aria-label="Lauftage">${WEEKDAYS.map((t, i) => `<label class="opt"><input type="checkbox" name="r-wd" value="${i}"${d.wd.includes(String(i)) ? " checked" : ""}><span><b>${t}</b></span></label>`).join("")}</div>
+    <p class="hint" id="r-count" aria-live="polite">${n < 2 ? `Mindestens 2 Tage auswählen.` : n > 5 ? `Höchstens 5 Tage, bitte ${n - 5} abwählen.` : `${n} Lauftage pro Woche. Der Longrun liegt auf dem letzten Tag.`}</p>
+    <h3 class="q">Deine aktuelle 5-km-Zeit <small>(optional)</small></h3>
+    <label class="field"><span>Zeit in Minuten, z. B. 28:30</span><input name="r-t5" inputmode="numeric" placeholder="mm:ss" value="${esc(d.t5s || "")}"></label>
+    <p class="hint" id="r-err" aria-live="polite">Damit zeigt dir die App für jeden Abschnitt ein Zieltempo pro Kilometer.</p>
+    <div class="btns" style="margin-top:6px">${S.run.p ? `<button type="button" class="btn sec" data-act="run-cancel">Abbrechen</button>` : ""}<button type="button" class="btn" data-act="run-make" style="flex:1"${ok ? "" : " disabled"}>Laufplan erstellen</button></div>
+  </section>`;
+}
+
+$("#view").addEventListener("change", e => {
+  if (!runDraft || !e.target.name?.startsWith("r-")) return;
+  const f = e.target.name.slice(2);
+  if (f === "wd") runDraft.wd = [...document.querySelectorAll('#view input[name="r-wd"]:checked')].map(i => i.value);
+  else if (f === "t5") runDraft.t5s = e.target.value;
+  else runDraft[f] = e.target.value;
+  if (f !== "t5") { render(); }
+});
+
+function runViewClick(t, a) {
+  if (t.dataset.rweek) { S.run.week = +t.dataset.rweek; save(); render(); return; }
+  if (t.dataset.rsess) { openRunSheet(+t.dataset.rsess); return; }
+  if (a === "run-setup") { runDraft = initRunDraft(); render(); window.scrollTo(0, 0); }
+  if (a === "run-cancel") { runDraft = null; render(); }
+  if (a === "run-free") startRun(null, true);
+  if (a === "run-resume") startRun(S.runActive.i, S.runActive.i == null, S.runActive.w);
+  if (a === "run-make") {
+    const raw = $("#view [name=r-t5]").value.trim(), t5 = raw ? parseTime(raw) : null;
+    if (raw && !t5) { $("#r-err").textContent = "Bitte die Zeit als Minuten:Sekunden eingeben, zwischen 12:00 und 60:00."; return; }
+    const changed = !S.run.p || S.run.p.goal !== runDraft.goal || S.run.p.level !== runDraft.level || S.run.p.wd.join() !== runDraft.wd.join();
+    S.run.p = { goal: runDraft.goal, level: runDraft.level, wd: runDraft.wd.map(Number).sort((x, y) => x - y), t5 };
+    if (changed) { S.run.week = 0; S.run.done = {}; }
+    runDraft = null; save(); render(); window.scrollTo(0, 0);
+  }
+}
+
+function openRunSheet(i) {
+  const s = runWeek(S.run.week)[i], info = SESSIONS[s.key];
+  $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="${esc(s.name)}"><div class="grab"></div>
+    <div><p class="pl-eyebrow">${WEEKDAYS_LONG[s.wd]} · Woche ${S.run.week + 1}</p><h2>${esc(s.name)}</h2>
+    <div class="chips" style="margin-top:8px"><span class="chip dark">${s.min} min</span><span class="chip">${s.segs.length} ${s.segs.length === 1 ? "Abschnitt" : "Abschnitte"}</span>${runDone(S.run.week, i) ? `<span class="chip ok">✓ erledigt</span>` : ""}</div></div>
+    <ol class="how">${s.text.split(" · ").map(x => `<li>${esc(x)}</li>`).join("")}</ol>
+    <p class="cue"><b>So läufst du:</b> ${esc(info.h)}</p>
+    ${runPaceList(s.segs)}
+    <p class="hint">Die App sagt jeden Abschnitt mit Ton, Vibration und Stimme an und zählt die Kilometer per GPS.</p>
+    <div class="btns"><button type="button" class="btn sec" data-act="close">Schließen</button><button type="button" class="btn" data-act="run-start" data-i="${i}" style="flex:1">${ICON.play} Lauf starten</button></div>
+  </div>`;
+  $("#sheet").hidden = false;
+  $("#sheet [data-act=run-start]").focus({ preventScroll: true });
+}
+
+// ---------- Laufen: Lauf-Modus mit Stoppuhr, Intervallen und GPS ----------
+let R = null, runT = null;
+
+// R.t ist die Stoppuhr; R.off verschiebt nur die Abschnitte (Abschnitt überspringen)
+function startRun(i, free = false, week = S.run.week) {
+  const w = free ? null : week, sess = free ? null : runWeek(w)[i];
+  const resume = S.runActive && S.runActive.i === i && S.runActive.w === w;
+  R = { i, w, sess, segs: sess ? sess.segs : [], t: 0, off: 0, last: Date.now(), paused: false, tr: { m: 0 }, extra: 0, base: 0,
+    gps: "aus", acc: null, watch: null, segI: -1, splits: [], confirm: false, saving: false, cform: null };
+  if (resume) { R.paused = !!S.runActive.paused; R.t = S.runActive.t; R.off = S.runActive.off || 0; R.base = S.runActive.m || 0; R.splits = S.runActive.splits || []; }
+  R.segI = sess ? segAt(R.segs, segPos()).i : -1;
+  unlockAudio(); requestWake(); startGps();
+  $("#player").hidden = false;
+  document.body.style.overflow = "hidden";
+  renderRun();
+  if (sess && !resume) announce(R.segs[0], true);
+  clearInterval(runT); runT = setInterval(runTick, 250);
+}
+
+const runM = () => Math.max(0, R.base + (R.tr.m || 0) + R.extra);
+const segPos = () => R.t + R.off;
+function persistRun() { S.runActive = { i: R.i, w: R.w, paused: R.paused, t: Math.round(R.t), off: Math.round(R.off), m: Math.round(runM()), splits: R.splits }; save(); }
+
+function startGps() {
+  if (!("geolocation" in navigator)) { R.gps = "nicht verfügbar"; return; }
+  R.gps = "sucht";
+  try {
+    R.watch = navigator.geolocation.watchPosition(pos => {
+      if (!R) return;
+      const c = pos.coords;
+      R.acc = Math.round(c.accuracy);
+      R.gps = c.accuracy > MAX_ACC ? "ungenau" : "ok";
+      if (!R.paused && !R.saving) R.tr = trackAdd(R.tr, { lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() });
+      runText();
+    }, err => { if (R) { R.gps = err.code === 1 ? "nicht erlaubt" : "kein Signal"; runText(); } },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
+  } catch (e) { R.gps = "nicht verfügbar"; }
+}
+function stopGps() { try { R && R.watch != null && navigator.geolocation.clearWatch(R.watch); } catch (e) {} }
+
+function say(t) {
+  try {
+    if (!window.speechSynthesis) return;
+    const u = new SpeechSynthesisUtterance(t); u.lang = "de-DE"; u.rate = 1.05;
+    speechSynthesis.cancel(); speechSynthesis.speak(u);
+  } catch (e) {}
+}
+const durWords = s => s % 60 ? `${Math.floor(s / 60) ? Math.floor(s / 60) + " Minuten " : ""}${s % 60} Sekunden` : s === 60 ? "eine Minute" : `${s / 60} Minuten`;
+function announce(seg, first) {
+  beep(990, .3); vibrate(seg.k === "work" || seg.k === "tempo" ? [300, 120, 300, 120, 300] : [400]);
+  const tp = targetPace(S.run.p?.t5, seg.k, S.run.p?.goal);
+  say(`${first ? "Los geht's. " : ""}${SEG[seg.k]}, ${durWords(seg.sec)}${tp ? `, Tempo ${Math.floor(tp / 60)} ${tp % 60 ? tp % 60 : ""}` : ""}.`);
+}
+
+function runTick() {
+  if (!R) return;
+  const now = Date.now(), dt = (now - R.last) / 1000;
+  R.last = now;
+  if (R.paused || R.saving) return;
+  const before = R.t, pos0 = segPos();
+  R.t += dt;
+  if (R.sess) {
+    const at = segAt(R.segs, segPos()), prevLeft = segAt(R.segs, pos0).left;
+    // 3-2-1 vor dem Wechsel
+    if (at.i === R.segI && Math.ceil(at.left) !== Math.ceil(prevLeft) && Math.ceil(at.left) <= 3 && at.left > 0) beep(660, .08);
+    if (at.i !== R.segI) {
+      R.segI = at.i;
+      if (at.i < R.segs.length) announce(R.segs[at.i]);
+      else { beep(990, .5); vibrate([200, 100, 200, 100, 600]); say("Einheit geschafft. Du kannst auslaufen oder den Lauf beenden."); }
+      renderRun();
+    }
+  }
+  // Kilometer-Ansage mit Zeit für diesen Kilometer
+  const k = Math.floor(runM() / 1000);
+  if (k > R.splits.length) {
+    const prevT = R.splits.reduce((a, x) => a + x, 0);
+    R.splits.push(Math.round(R.t - prevT));
+    beep(880, .15);
+    say(`Kilometer ${k}. ${fmtPace(R.splits[R.splits.length - 1]).replace(":", " Minuten ")}.`);
+    renderRun();
+  }
+  if (Math.floor(R.t) % 5 === 0 && Math.floor(before) % 5 !== 0) persistRun();
+  runText();
+}
+
+// Nur die Zahlen aktualisieren, nicht die ganze Ansicht
+function runText() {
+  if (!R || R.saving) return;
+  const set = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+  const m = runM();
+  set("r-clock", fmt(R.t));
+  set("r-km", kmFmt(m));
+  set("r-pace", m >= 200 && R.t >= 60 ? fmtPace(R.t / (m / 1000)) : "–");
+  set("r-gps", gpsText());
+  if (R.sess && R.segI < R.segs.length) {
+    const at = segAt(R.segs, segPos()), seg = R.segs[at.i];
+    set("r-left", fmt(at.left));
+    const bar = document.getElementById("r-bar");
+    if (bar) bar.style.width = `${Math.min(100, at.into / seg.sec * 100)}%`;
+  }
+}
+const gpsText = () => R.gps === "ok" ? `GPS ±${R.acc} m` : R.gps === "ungenau" ? `GPS ungenau (±${R.acc} m)` : R.gps === "sucht" ? "GPS sucht …" : `GPS ${R.gps}`;
+
+function renderRun() {
+  if (!R) return;
+  let body;
+  if (R.saving) {
+    body = `<div><p class="pl-eyebrow">Lauf speichern</p><h2 class="pl-title">Wie lief's?</h2></div>
+      <div class="kvs"><div><small>Zeit</small><span class="big">${fmt(R.t)}</span></div><div><small>Strecke</small><span class="big">${kmFmt(runM())} km</span></div></div>
+      <p class="hint">Strecke und Dauer kannst du noch korrigieren.</p>
+      ${cardioForm(R.cform)}
+      <div class="pl-actions"><button type="button" class="btn-go" data-r="save">${ICON.check} Speichern</button>
+        <div class="btns"><button type="button" class="btn sec" data-r="back" style="flex:1">Weiterlaufen</button><button type="button" class="btn sec" data-r="discard" style="flex:1">Nicht speichern</button></div></div>`;
+  } else if (R.confirm) {
+    body = `<div class="confirm pop"><p><b>Lauf ohne Speichern verwerfen?</b></p><p class="hint">Zeit und Strecke gehen verloren.</p>
+      <div class="btns"><button type="button" class="btn warn" data-r="discard-yes">Verwerfen</button><button type="button" class="btn sec" data-r="discard-no">Zurück</button></div></div>`;
+  } else {
+    const s = R.sess, done = s && R.segI >= R.segs.length;
+    let segHTML = "";
+    if (s && !done) {
+      const seg = R.segs[R.segI], nx = R.segs[R.segI + 1], tp = targetPace(S.run.p.t5, seg.k, S.run.p.goal);
+      const hard = seg.k === "work" || seg.k === "tempo";
+      segHTML = `<div class="seg-card${hard ? " hard" : ""}">
+        <div class="seg-top"><span class="seg-k">${SEG[seg.k]}</span><span class="seg-n">${R.segI + 1} / ${R.segs.length}</span></div>
+        <span class="seg-left" id="r-left">${fmt(segAt(R.segs, segPos()).left)}</span>
+        <div class="seg-bar"><i id="r-bar"></i></div>
+        <div class="seg-foot"><span>${tp ? `Ziel ${fmtPace(tp)} /km` : EFFORT[seg.k]}</span><span>${nx ? `Danach: ${SEG[nx.k]} ${fmt(nx.sec)}` : "Danach: geschafft"}</span></div>
+      </div>`;
+    } else if (done) segHTML = `<div class="seg-card ok"><div class="seg-top"><span class="seg-k">Geschafft</span></div><p style="margin:0">Alle Abschnitte erledigt. Du kannst auslaufen oder den Lauf beenden.</p></div>`;
+    body = `<div><p class="pl-eyebrow">${s ? `Woche ${R.w + 1} · ${WEEKDAYS_LONG[s.wd]}` : "Freier Lauf"}</p><h2 class="pl-title">${esc(s ? s.name : "Laufen")}</h2></div>
+      ${s ? `<div class="segs" aria-hidden="true">${R.segs.map((x, i) => `<i style="flex:${x.sec}" class="${i < R.segI ? "on" : i === R.segI ? "now" : ""}${x.k === "work" || x.k === "tempo" ? " hard" : ""}"></i>`).join("")}</div>` : ""}
+      ${segHTML}
+      <div class="run-dist">
+        <div class="run-km"><span id="r-km">${kmFmt(runM())}</span><small>km</small></div>
+        <div class="run-sub"><span>Ø <b id="r-pace">–</b> /km</span><span id="r-gps">${gpsText()}</span></div>
+        <div class="btns" style="justify-content:center"><button type="button" class="btn sec" data-r="km-" aria-label="100 Meter abziehen">− 0,1 km</button><button type="button" class="btn sec" data-r="km+" aria-label="100 Meter hinzufügen">+ 0,1 km</button></div>
+      </div>
+      ${R.splits.length ? `<div class="splits">${R.splits.map((x, i) => `<span><small>km ${i + 1}</small>${fmtPace(x)}</span>`).slice(-6).join("")}</div>` : ""}
+      <div class="pl-actions">
+        <button type="button" class="btn-go${R.paused ? "" : " sec-go"}" data-r="pause">${R.paused ? ICON.play + " Weiter" : ICON.pause + " Pause"}</button>
+        <button type="button" class="btn sec block" data-r="finish">Lauf beenden</button>
+      </div>`;
+  }
+  $("#player").innerHTML = `<div class="pl run-pl">
+    <div class="pl-top">
+      <button type="button" class="icon-btn" data-r="quit" aria-label="Lauf verwerfen">${ICON.close}</button>
+      <button type="button" class="clock${R.paused || R.saving ? " paused" : ""}" data-r="pause" aria-label="${R.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${R.saving ? "disabled" : ""}>${R.paused || R.saving ? ICON.play : ICON.pause}<span id="r-clock">${fmt(R.t)}</span></button>
+      ${R.sess && !R.saving && R.segI < R.segs.length ? `<button type="button" class="icon-btn" data-r="skip" aria-label="Abschnitt überspringen"><svg viewBox="0 0 24 24"><path d="M6 5l8 7-8 7M18 5v14"/></svg></button>` : "<span></span>"}
+    </div>
+    ${body}
+  </div>`;
+  runText();
+}
+
+function closeRun() {
+  clearInterval(runT); stopGps();
+  try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {}
+  R = null;
+  $("#player").hidden = true; $("#player").innerHTML = "";
+  document.body.style.overflow = "";
+  releaseWake(); render();
+}
+
+$("#player").addEventListener("click", e => {
+  const b = e.target.closest("[data-r]");
+  if (!b || !R) return;
+  unlockAudio();
+  switch (b.dataset.r) {
+    case "pause":
+      R.paused = !R.paused; R.last = Date.now();
+      if (!R.paused) R.tr = trackResume(R.tr);
+      persistRun(); renderRun(); break;
+    case "km+": R.extra += 100; runText(); break;
+    case "km-": R.extra = Math.max(-(R.base + (R.tr.m || 0)), R.extra - 100); runText(); break;
+    case "skip": {
+      // An den Anfang des nächsten Abschnitts springen
+      const at = segAt(R.segs, segPos()); R.off += at.left + 0.01; runTick(); persistRun(); break;
+    }
+    case "finish": {
+      const key = R.sess ? R.sess.key : null;
+      R.saving = true;
+      R.cform = { act: "lauf", min: Math.max(1, Math.round(R.t / 60)), km: runM() >= 100 ? (Math.round(runM() / 10) / 100).toFixed(2) : "", hr: "", rpe: key ? RUN_RPE[key] : 5 };
+      persistRun(); renderRun(); break;
+    }
+    case "back": R.saving = false; R.last = Date.now(); R.tr = trackResume(R.tr); renderRun(); break;
+    case "save": {
+      const x = normalize({ ...readCardioForm($("#player")), src: R.sess ? "laufplan" : "lauf", name: R.sess ? R.sess.name : "Freier Lauf" });
+      if (!x) { $("#cf-err").textContent = "Bitte eine Dauer in Minuten eintragen."; break; }
+      addCardio(x);
+      if (R.sess) S.run.done[`${R.w}-${R.i}`] = true;
+      S.history.push({ date: x.date, name: R.sess ? R.sess.name : "Freier Lauf", run: true, w: R.w ?? 0, dur: Math.round(R.t), sets: 0, reps: 0, vol: 0, cardio: { min: x.min, km: x.km, rpe: x.rpe } });
+      S.runActive = null; save(); closeRun(); break;
+    }
+    case "quit": case "discard": R.confirm = true; R.saving = false; renderRun(); break;
+    case "discard-no": R.confirm = false; renderRun(); break;
+    case "discard-yes": S.runActive = null; save(); closeRun(); break;
+  }
+});
+
 // ---------- Ton, Vibration, Bildschirm an ----------
 function unlockAudio() {
   try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {}
@@ -665,10 +994,13 @@ function releaseWake() { try { wake && wake.release(); } catch (e) {} wake = nul
 // Im Hintergrund läuft die Zeit weiter: beim Zurückkehren wird die verstrichene Zeit nachgeholt
 document.addEventListener("visibilitychange", () => {
   if (P && document.visibilityState === "visible") { tick(); requestWake(); }
+  if (R && document.visibilityState === "visible") { runTick(); requestWake(); }
 });
 
 // Laufendes Training nicht durch ein App-Update neu laden
-window.appBusy = () => !!P;
+window.appBusy = () => !!P || !!R;
 
 // ---------- Start ----------
+// Ein unterbrochener Lauf (z. B. App geschlossen) wartet im Tab Laufen
+if (S && S.runActive) tab = "laufen";
 render();

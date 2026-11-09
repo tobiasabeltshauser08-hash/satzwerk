@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node tests/test.js && node tests/endurance.test.js"
+    "test": "node tests/test.js && node tests/endurance.test.js && node tests/run.test.js"
   }
 }
