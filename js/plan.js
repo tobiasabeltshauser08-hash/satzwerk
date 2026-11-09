@@ -94,3 +94,26 @@ export function minutes(p, day, w) {
   if (day.fin) s += 9 * 60;
   return Math.round(s / 60 / 5) * 5;
 }
+
+// Vorschlag für heute aus der letzten Woche mit Eintrag (doppelte Progression):
+// erst alle Sätze bis zum oberen Wiederholungsziel, dann mehr Gewicht.
+// last = { w, kg, reps: [..] }, x = prescription() dieser Woche, step = Gewichtsschritt in kg
+const kgRound = (v, step) => String(+(Math.round(v / step) * step).toFixed(2));
+export function suggestLoad(x, last, w, step) {
+  if (!last) return null;
+  const done = last.reps.filter(n => n > 0);
+  if (!done.length) return null;
+  const kg = parseFloat(last.kg) || 0, allTop = done.every(n => n >= x.hi), weak = done.some(n => n < x.lo);
+  const unit = x.timed ? "s" : "Wdh.";
+  if (w === 3) {
+    return kg ? { kg: kgRound(Math.max(step, kg * .9), step), up: false, txt: "Deload: ca. 10 % leichter, alle Sätze sauber" }
+      : { kg: null, up: false, txt: `Deload: locker ${x.lo} ${unit}, nicht bis ans Limit` };
+  }
+  if (allTop) {
+    if (x.timed) return { kg: kg ? String(kg) : null, reps: x.hi + 5, up: true, txt: `Letzte Woche alle Sätze ${x.hi} s gehalten: heute 5 s länger` };
+    if (kg) return { kg: kgRound(kg + step, step), up: true, txt: `Letzte Woche alle Sätze mit ${x.hi} Wdh.: heute ${String(+(step).toFixed(2)).replace(".", ",")} kg mehr` };
+    return { kg: null, up: true, txt: `Letzte Woche alle Sätze mit ${x.hi} Wdh.: langsamer ausführen oder schwerere Variante (Übung tauschen)` };
+  }
+  if (weak) return { kg: kg ? String(kg) : null, up: false, txt: `Gleiches Gewicht, bis du in jedem Satz ${x.lo} ${unit} schaffst` };
+  return { kg: kg ? String(kg) : null, up: false, txt: `Gleiches Gewicht, Ziel: ${x.hi} ${unit} in jedem Satz` };
+}

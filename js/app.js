@@ -1,8 +1,12 @@
-import { QUESTIONS, DEFAULT, label, WARMUP, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG } from "./data.js";
-import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays } from "./plan.js";
+import { QUESTIONS, DEFAULT, label, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG } from "./data.js";
+import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays, suggestLoad } from "./plan.js";
+import { warmupFor, stretchFor, mobMinutes } from "./mobility.js";
+import { exportBackup, backupName, parseBackup, icsReminders, icsName } from "./backup.js";
 import { figure, mountFigures } from "./figure.js";
 import { HOWTO } from "./howto.js";
 import { ACTIVITIES, actLabel, RPE, WEEK_GOAL, INTENSE_RPE, normalize, pace, summary } from "./endurance.js";
+import { simplify, encodeTrack, decodeTrack, bestEfforts, bestOf, isRecord, trackShape } from "./track.js";
+import { hrZones, segZone, sessZone, normBody, bodyStats, nutrition } from "./health.js";
 import { RUN_GOALS, RUN_LEVELS, RUN_WEEKS, runPhase, SESSIONS, SEG, buildRunWeek, segAt, totalSec, targetPace, fmtPace, parseTime, trackAdd, trackResume, kmStats, MAX_ACC } from "./run.js";
 
 const KEY = "satzwerk-v3";
@@ -21,7 +25,8 @@ const ICON = {
 let S = null;
 try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!S || !S.profile) S = null;
-else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], run: { p: null, week: 0, done: {} }, runActive: null, ...S };
+else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], run: { p: null, week: 0, done: {} }, runActive: null, body: [], health: {}, ...S };
+if (S) S.settings = { voice: true, wake: true, remind: "18:00", ...S.settings };
 const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
 let tab = "heute";
 
@@ -152,6 +157,7 @@ function viewHistory() {
       <div><small>Bewegt</small><span class="big">${Math.round(tot.vol).toLocaleString("de-DE")} kg</span></div>
     </div></section>
   ${viewCardio()}
+  ${viewBody()}
   <section><div class="sec-h"><h2>Letzte Trainings</h2></div>`;
   h += H.length ? `<div class="rowlist">${H.slice().reverse().slice(0, 30).map(x => {
     const d = new Date(x.date);
@@ -169,13 +175,88 @@ function viewHistory() {
     <p class="hint" style="margin:10px 0 12px">Geräte: ${esc(["Körpergewicht", ...p.tools.map(t => label("tools", t))].join(", "))}</p>
     <div class="btns"><button type="button" class="btn" data-act="wizard">Fragen neu beantworten</button><button type="button" class="btn sec" data-act="reset">Fortschritt löschen</button></div>
     <div id="reset-box"></div>
-  </section>`;
+  </section>
+  ${viewSettings()}`;
   return h;
 }
+
+// ---------- Einstellungen, Erinnerungen, Datensicherung ----------
+function viewSettings() {
+  const st = S.settings, tog = (k, t, d) => `<label class="tog"><input type="checkbox" data-set="${k}"${st[k] ? " checked" : ""}><span><b>${t}</b><small>${d}</small></span></label>`;
+  return `<section><div class="sec-h"><h2>Einstellungen</h2></div>
+    <div class="set-list">
+      ${tog("voice", "Sprachansagen", "Übung, Satz, Gewicht, Pausen und Dehnen werden angesagt")}
+      ${tog("wake", "Bildschirm bleibt an", navigator.wakeLock ? "Während Training, Lauf und Dehnen geht das Display nicht aus" : "Wird von diesem Browser nicht unterstützt")}
+    </div></section>
+  <section><div class="sec-h"><h2>Erinnerungen</h2></div>
+    <p class="hint" style="margin-bottom:10px">Legt für jeden Trainingstag einen wöchentlichen Termin mit Erinnerung in deinem Kalender an (iPhone, Android, PC). Funktioniert auch, wenn die App geschlossen ist.</p>
+    <div class="rem-row"><label>Trainingszeit <input type="time" id="rem-time" value="${esc(st.remind)}"></label>
+      <label>Erinnern <select id="rem-lead">${[[0, "zur Startzeit"], [15, "15 min vorher"], [30, "30 min vorher"], [60, "1 h vorher"]].map(([v, t]) => `<option value="${v}"${(st.lead ?? 30) === v ? " selected" : ""}>${t}</option>`).join("")}</select></label></div>
+    <div class="btns" style="margin-top:10px"><button type="button" class="btn" data-act="ics">Termine in Kalender übernehmen</button></div>
+    <p class="hint" id="rem-msg" aria-live="polite" style="margin-top:8px"></p>
+  </section>
+  <section><div class="sec-h"><h2>Datensicherung</h2></div>
+    <p class="hint" style="margin-bottom:10px">Deine Daten liegen nur auf diesem Gerät. Speichere ab und zu ein Backup, z. B. vor einem Handywechsel.${st.lastBackup ? ` Letztes Backup: ${new Date(st.lastBackup).toLocaleDateString("de-DE")}.` : ""}</p>
+    <div class="btns"><button type="button" class="btn" data-act="export">Backup speichern</button><button type="button" class="btn sec" data-act="import">Backup laden</button></div>
+    <input type="file" id="import-file" accept="application/json,.json" hidden>
+    <div id="import-box" aria-live="polite"></div>
+  </section>`;
+}
+const isIOS = () => /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+async function saveFile(name, type, text) {
+  // iPhone: Kalenderdatei direkt öffnen (Safari fragt „Alle hinzufügen“), Backup über das Teilen-Menü
+  if (isIOS() && type === "text/calendar") { location.href = "data:text/calendar;charset=utf-8," + encodeURIComponent(text); return; }
+  const file = new File([text], name, { type });
+  if (isIOS() && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: name }); return; } catch (e) { if (e.name === "AbortError") return; }
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(file); a.download = name;
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+let importData = null;
+function settingsClick(t, a) {
+  if (a === "ics") {
+    const time = $("#rem-time").value, lead = +$("#rem-lead").value, pl = plan();
+    try {
+      const days = pl.days.map(d => ({ wd: d.wd, name: d.name }));
+      if (S.run.p) runWeek(S.run.week).forEach(x => days.push({ wd: x.wd, name: "Laufen: " + x.name }));
+      S.settings.remind = time; S.settings.lead = lead; save();
+      saveFile(icsName(), "text/calendar", icsReminders({ days, time, lead }));
+      $("#rem-msg").textContent = `${days.length} wöchentliche Termine erstellt. Ändert sich dein Plan, die alten Termine im Kalender löschen und neu übernehmen.`;
+    } catch (e) { $("#rem-msg").textContent = "Bitte eine gültige Uhrzeit wählen."; }
+  }
+  if (a === "export") {
+    S.settings.lastBackup = new Date().toISOString(); save();
+    saveFile(backupName(new Date()), "application/json", exportBackup(S));
+    render();
+  }
+  if (a === "import") $("#import-file").click();
+  if (a === "import-yes" && importData) {
+    S = { body: [], health: {}, ...importData }; importData = null; save(); tab = "heute"; render(); window.scrollTo(0, 0);
+  }
+  if (a === "import-no") { importData = null; $("#import-box").innerHTML = ""; }
+}
+document.addEventListener("change", async e => {
+  const t = e.target;
+  if (t.dataset && t.dataset.set) { S.settings[t.dataset.set] = t.checked; save(); return; }
+  if (t.id === "import-file" && t.files[0]) {
+    const box = $("#import-box");
+    try {
+      importData = parseBackup(await t.files[0].text());
+      importData.settings = { voice: true, wake: true, remind: "18:00", ...importData.settings };
+      box.innerHTML = `<div class="confirm" style="margin-top:12px"><p><b>Backup laden?</b></p><p class="hint">${importData.history.length} Trainings, ${importData.cardio.length} Ausdauer-Einträge. Die aktuellen Daten auf diesem Gerät werden ersetzt.</p>
+        <div class="btns"><button type="button" class="btn warn" data-act="import-yes">Ersetzen</button><button type="button" class="btn sec" data-act="import-no">Abbrechen</button></div></div>`;
+    } catch (err) { importData = null; box.innerHTML = `<p class="err" style="margin-top:10px">${esc(err.message)}</p>`; }
+    t.value = "";
+  }
+});
 
 // ---------- Ausdauer ----------
 function addCardio(e) {
   const x = normalize(e);
+  if (x && e.track) { x.track = e.track; x.best = e.best; }
   if (x) { S.cardio.push(x); S.cardio.sort((a, b) => a.date.localeCompare(b.date)); save(); }
   return x;
 }
@@ -211,17 +292,109 @@ function viewCardio() {
     <div class="cbars" role="img" aria-label="Ausdauer-Minuten der letzten 8 Wochen">${sm.weeks.map((w, i) => `<div><i style="height:${Math.round(w.pts / max * 100)}%"${w.pts >= WEEK_GOAL ? ' class="ok"' : ""}></i><small>${i === sm.weeks.length - 1 ? "jetzt" : w.start.toLocaleDateString("de-DE", { day: "numeric", month: "numeric" })}</small></div>`).join("")}</div>
     <p class="hint" style="margin:8px 0 12px">Empfehlung der WHO: 150 min moderat oder 75 min intensiv pro Woche. Einheiten ab Anstrengung ${INTENSE_RPE}/10 zählen doppelt.</p>
     <div class="btns"><button type="button" class="btn" data-act="cardio-add">Ausdauer eintragen</button></div>`;
+  const B = bestOf(E);
+  if (Object.values(B).some(Boolean)) h += `<div class="sec-h" style="margin-top:16px"><h3>Bestzeiten (GPS)</h3></div>
+    <div class="best">${Object.entries(B).map(([d, b]) => `<div><small>${distName(+d)}</small><b>${b ? fmt(b.sec) : "–"}</b><span class="d">${b ? new Date(E[b.i].date).toLocaleDateString("de-DE", { day: "numeric", month: "short", year: "2-digit" }) : "noch offen"}</span></div>`).join("")}</div>`;
   if (E.length) h += `<div class="rowlist" style="margin-top:12px">${E.map((e, i) => [e, i]).reverse().slice(0, 20).map(([e, i]) => {
     const d = new Date(e.date), extra = [e.km ? String(e.km).replace(".", ",") + " km" : "", pace(e), e.hr ? e.hr + " bpm" : "", e.rpe ? "RPE " + e.rpe : ""].filter(Boolean).join(" · ");
     return `<button type="button" data-cardio="${i}"><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${esc(actLabel(e.act))}${e.name ? ` <small style="display:inline">· ${esc(e.name)}</small>` : ""}</b><small>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short" })}${extra ? " · " + extra : ""}</small></span><span class="end">${e.min} min</span></button>`;
   }).join("")}</div>`;
   return h + `</section>`;
 }
+function bestHTML(best) {
+  if (!best || !Object.values(best).some(v => v != null)) return "";
+  return `<div class="best">${Object.entries(best).map(([d, v]) => `<div><small>${distName(+d)}</small><b>${v != null ? fmt(v) : "–"}</b></div>`).join("")}</div>`;
+}
+
+// ---------- Körperwerte, Puls-Zonen, Ernährung ----------
+const BODY_F = [["kg", "Gewicht", "kg"], ["waist", "Taille", "cm"], ["fat", "Körperfett", "%"], ["chest", "Brust", "cm"], ["arm", "Oberarm", "cm"], ["hip", "Hüfte", "cm"]];
+const n1 = v => String(v).replace(".", ",");
+function sparkHTML(series) {
+  const pts = series.slice(-20);
+  if (pts.length < 2) return "";
+  const t0 = +new Date(pts[0].date), t1 = +new Date(pts[pts.length - 1].date) || t0 + 1;
+  const vs = pts.map(p => p.v), lo = Math.min(...vs), hi = Math.max(...vs), rng = hi - lo || 1;
+  const xy = pts.map(p => [(+new Date(p.date) - t0) / (t1 - t0 || 1) * 300, 50 - (p.v - lo) / rng * 44]);
+  const d = xy.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join("");
+  const [lx, ly] = xy[xy.length - 1];
+  return `<svg class="spark" viewBox="-4 0 308 56" preserveAspectRatio="none" role="img" aria-label="Gewichtsverlauf von ${n1(pts[0].v)} auf ${n1(pts[pts.length - 1].v)} kg"><path d="${d}"/><circle cx="${lx}" cy="${ly}" r="3"/></svg>`;
+}
+function viewBody() {
+  const B = S.body, H = S.health, kg = bodyStats(B, "kg");
+  const shown = BODY_F.map(f => [f, bodyStats(B, f[0])]).filter(([, st]) => st.last != null);
+  const chg = st => st.change4w == null ? "" : `<small style="text-transform:none;letter-spacing:0">${st.change4w > 0 ? "+" : ""}${n1(st.change4w)} in 4 Wochen</small>`;
+  let h = `<section><div class="sec-h"><h2>Körper</h2>${B.length ? `<span>${new Date(B[B.length - 1].date).toLocaleDateString("de-DE", { day: "numeric", month: "short" })}</span>` : ""}</div>`;
+  h += shown.length ? `<div class="kvs">${shown.map(([[, t, u], st]) => `<div><small>${t}</small><span class="big">${n1(st.last)} <small style="font-size:.8rem">${u}</small></span>${chg(st)}</div>`).join("")}</div>${sparkHTML(kg.series)}`
+    : `<p class="hint" style="margin-bottom:10px">Trage einmal pro Woche Gewicht und Umfänge ein – am besten morgens vor dem Frühstück. Der Taillenumfang zeigt oft mehr als die Waage.</p>`;
+  h += `<div class="btns" style="margin-top:12px"><button type="button" class="btn" data-act="body-add">Werte eintragen</button>${B.length ? `<button type="button" class="btn sec" data-act="body-list">Alle Einträge</button>` : ""}</div></section>`;
+
+  // Puls-Zonen
+  const Z = zonesNow();
+  h += `<section><div class="sec-h"><h2>Puls-Zonen</h2>${Z ? `<span>max ${Z.max} · Ruhe ${Z.rest}${Z.est ? " (geschätzt)" : ""}</span>` : ""}</div>`;
+  h += Z ? `<div class="zones">${Z.zones.map(z => `<div><span class="zn">Z${z.z}</span><span><b>${z.n}</b><small>${esc(z.txt)}</small></span><span class="zr">${z.lo}–${z.hi}</span></div>`).join("")}</div>
+      <p class="hint" style="margin-top:8px">${H.max ? "Mit deinem gemessenen Maximalpuls" : "Maximalpuls geschätzt aus dem Alter (208 − 0,7 × Alter)"} und der Herzfrequenzreserve (Karvonen). Die Zonen stehen auch im Laufplan bei jedem Abschnitt.${Z.est ? " Miss deinen Ruhepuls morgens im Liegen, dann werden die Zonen genauer." : ""}</p>`
+    : `<p class="hint" style="margin-bottom:10px">Mit Alter und Ruhepuls berechnet die App deine fünf Trainingszonen und zeigt sie bei jedem Lauf-Abschnitt an.</p>`;
+  h += `<div class="btns" style="margin-top:10px"><button type="button" class="btn${Z ? " sec" : ""}" data-act="health">${Z ? "Angaben ändern" : "Angaben eintragen"}</button></div></section>`;
+
+  // Ernährung
+  const N = nutrition({ sex: H.sex, age: H.age, cm: H.cm, kg: kg.last, goal: S.profile.goal, days: trainingDays(S.profile), time: S.profile.time });
+  h += `<section><div class="sec-h"><h2>Ernährung</h2>${N ? `<span>Ziel: ${label("goal", S.profile.goal)}</span>` : ""}</div>`;
+  h += N ? `<div class="kvs">
+      <div><small>Kalorien / Tag</small><span class="big">${N.kcal.toLocaleString("de-DE")}</span><small style="text-transform:none;letter-spacing:0">Bedarf ca. ${N.tdee.toLocaleString("de-DE")} kcal</small></div>
+      <div><small>Eiweiß / Tag</small><span class="big"><span style="white-space:nowrap;font-size:1.2rem">${N.protein[0]}–${N.protein[1]} g</span></span></div>
+      <div><small>Grundumsatz</small><b>${N.bmr.toLocaleString("de-DE")} kcal</b></div>
+      <div><small>Wasser</small><b>ca. ${n1(N.water)} l</b></div>
+    </div><p class="hint" style="margin-top:8px">${esc(N.note)}</p>`
+    : `<p class="hint">Für Kalorien- und Eiweißziel fehlt noch: ${[!H.sex && "Geschlecht", !H.age && "Alter", !H.cm && "Größe", kg.last == null && "Gewicht (unter „Körper“)"].filter(Boolean).join(", ") || "gültige Angaben"}.</p>`;
+  return h + `</section>`;
+}
+function openBodySheet(i) {
+  const e = i == null ? { date: new Date().toISOString() } : S.body[i];
+  const f = ([k, t, u]) => `<label class="field"><span>${t} (${u})</span><input name="${k}" type="text" inputmode="decimal" value="${esc(e[k] == null ? "" : n1(e[k]))}" placeholder="optional"></label>`;
+  $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="Körperwerte"><div class="grab"></div>
+    <h2>${i == null ? "Körperwerte eintragen" : "Eintrag bearbeiten"}</h2>
+    <p class="hint">Alles optional – trag ein, was du gemessen hast. Umfänge mit Maßband, entspannt, an der breitesten Stelle (Taille: auf Höhe Bauchnabel).</p>
+    <div class="cform bform"><label class="field wide"><span>Datum</span><input name="date" type="date" value="${day0(e.date)}" max="${day0(new Date())}"></label>${BODY_F.map(f).join("")}<p class="hint wide err" id="bf-err" aria-live="polite"></p></div>
+    <div class="btns">${i == null ? "" : `<button type="button" class="btn sec" data-act="b-del" data-i="${i}">Löschen</button>`}<button type="button" class="btn sec" data-act="close">Abbrechen</button><button type="button" class="btn" data-act="b-save" data-i="${i ?? ""}" style="flex:1">Speichern</button></div>
+  </div>`;
+  $("#sheet").hidden = false;
+  $("#sheet .bform [name=kg]").focus({ preventScroll: true });
+}
+function openBodyList() {
+  $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="Körperwerte"><div class="grab"></div>
+    <h2>Alle Einträge</h2>
+    <div class="rowlist">${S.body.map((e, i) => [e, i]).reverse().map(([e, i]) => {
+      const d = new Date(e.date), vals = BODY_F.filter(([k]) => e[k] != null).map(([k, t, u]) => `${t} ${n1(e[k])} ${u}`).join(" · ");
+      return `<button type="button" data-act="b-edit" data-i="${i}"><span class="wd">${WEEKDAYS[(d.getDay() + 6) % 7]}</span><span class="mid"><b>${d.toLocaleDateString("de-DE", { day: "numeric", month: "short", year: "numeric" })}</b><small>${vals}</small></span></button>`;
+    }).join("")}</div>
+    <div class="btns" style="margin-top:12px"><button type="button" class="btn sec" data-act="close" style="flex:1">Schließen</button></div>
+  </div>`;
+  $("#sheet").hidden = false;
+}
+function openHealthSheet() {
+  const H = S.health, f = (k, t, v, x) => `<label class="field"><span>${t}</span><input name="${k}" type="number" inputmode="numeric" value="${esc(v ?? "")}" ${x}></label>`;
+  $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="Deine Angaben"><div class="grab"></div>
+    <h2>Deine Angaben</h2>
+    <p class="hint">Für Puls-Zonen und Kalorienbedarf. Bleibt nur auf diesem Gerät.</p>
+    <div class="cform hform">
+      <label class="field"><span>Geschlecht</span><select name="sex"><option value="">–</option><option value="w"${H.sex === "w" ? " selected" : ""}>weiblich</option><option value="m"${H.sex === "m" ? " selected" : ""}>männlich</option></select></label>
+      ${f("age", "Alter", H.age, 'min="14" max="100" step="1"')}
+      ${f("cm", "Größe (cm)", H.cm, 'min="120" max="230" step="1"')}
+      ${f("rest", "Ruhepuls", H.rest, 'min="30" max="110" step="1" placeholder="optional"')}
+      ${f("max", "Maximalpuls", H.max, 'min="120" max="230" step="1" placeholder="optional, gemessen"')}
+      <p class="hint wide err" id="hf-err" aria-live="polite"></p>
+    </div>
+    <p class="hint">Ruhepuls: morgens nach dem Aufwachen 1 Minute im Liegen zählen. Den Maximalpuls nur eintragen, wenn du ihn wirklich gemessen hast (z. B. mit Brustgurt).</p>
+    <div class="btns"><button type="button" class="btn sec" data-act="close">Abbrechen</button><button type="button" class="btn" data-act="h-save" style="flex:1">Speichern</button></div>
+  </div>`;
+  $("#sheet").hidden = false;
+}
+
 function openCardioSheet(i) {
   const e = i == null ? { act: S.cardio.length ? S.cardio[S.cardio.length - 1].act : "lauf", rpe: 5 } : S.cardio[i];
   $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="Ausdauer"><div class="grab"></div>
     <h2>${i == null ? "Ausdauer eintragen" : "Eintrag bearbeiten"}</h2>
-    <p class="hint">Zum Beispiel ein Lauf oder eine Radtour an einem freien Tag.</p>
+    ${e.track ? mapHTML(decodeTrack(e.track)) + bestHTML(e.best) : `<p class="hint">Zum Beispiel ein Lauf oder eine Radtour an einem freien Tag.</p>`}
     ${cardioForm(e, true)}
     <div class="btns">${i == null ? "" : `<button type="button" class="btn sec" data-act="c-del" data-i="${i}">Löschen</button>`}<button type="button" class="btn sec" data-act="close">Abbrechen</button><button type="button" class="btn" data-act="c-save" data-i="${i ?? ""}" style="flex:1">Speichern</button></div>
   </div>`;
@@ -245,12 +418,16 @@ $("#view").addEventListener("click", e => {
   const a = t.dataset.act;
   if (a === "start") startWorkout();
   if (a === "wizard") openWizard();
-  if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte, der Verlauf und die Ausdauer-Einträge werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
+  if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte, der Verlauf, die Ausdauer-Einträge und die Körperwerte werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
   if (a === "reset-no") $("#reset-box").innerHTML = "";
-  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.active = null; S.week = 0; S.run.done = {}; S.run.week = 0; S.runActive = null; save(); render(); }
+  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.body = []; S.active = null; S.week = 0; S.run.done = {}; S.run.week = 0; S.runActive = null; save(); render(); }
   if (a === "cardio-add") openCardioSheet(null);
+  if (a === "body-add") openBodySheet(null);
+  if (a === "body-list") openBodyList();
+  if (a === "health") openHealthSheet();
   if (t.dataset.cardio) openCardioSheet(+t.dataset.cardio);
   runViewClick(t, a);
+  settingsClick(t, a);
 });
 
 // ---------- Übungs-Anleitung (Sheet) ----------
@@ -294,10 +471,31 @@ $("#sheet").addEventListener("click", e => {
     else {
       const x = normalize({ ...(i == null ? {} : S.cardio[i]), ...readCardioForm($("#sheet")) });
       if (!x) { $("#cf-err").textContent = "Bitte eine Dauer in Minuten eintragen."; return; }
+      if (i != null && S.cardio[i].track) { x.track = S.cardio[i].track; x.best = S.cardio[i].best; }
       if (i == null) S.cardio.push(x); else S.cardio[i] = x;
       S.cardio.sort((p, q) => p.date.localeCompare(q.date));
     }
     save(); closeSheet(); render(); return;
+  }
+  if (a === "b-edit") { openBodySheet(+e.target.closest("[data-act]").dataset.i); return; }
+  if (a === "b-save" || a === "b-del") {
+    const b = e.target.closest("[data-act]"), i = b.dataset.i === "" ? null : +b.dataset.i;
+    if (a === "b-del") S.body.splice(i, 1);
+    else {
+      const v = n => $(`#sheet .bform [name="${n}"]`).value, d = v("date");
+      const x = normBody({ ...Object.fromEntries(BODY_F.map(([k]) => [k, v(k)])), date: d ? new Date(d + "T08:00:00").toISOString() : undefined });
+      if (!x) { $("#bf-err").textContent = "Bitte mindestens einen gültigen Wert eintragen (z. B. Gewicht 30–300 kg)."; return; }
+      if (i == null) S.body.push(x); else S.body[i] = x;
+      S.body.sort((p, q) => p.date.localeCompare(q.date));
+    }
+    save(); closeSheet(); render(); return;
+  }
+  if (a === "h-save") {
+    const v = n => $(`#sheet .hform [name="${n}"]`).value.trim();
+    const x = { sex: v("sex"), age: v("age") ? +v("age") : null, cm: v("cm") ? +v("cm") : null, rest: v("rest") ? +v("rest") : null, max: v("max") ? +v("max") : null };
+    const bad = (x.age != null && (x.age < 14 || x.age > 100)) || (x.cm != null && (x.cm < 120 || x.cm > 230)) || ((x.age != null || x.max != null) && !hrZones(x));
+    if (bad) { $("#hf-err").textContent = "Bitte die Werte prüfen: Alter 14–100, Größe 120–230 cm, Ruhepuls 30–110, Maximalpuls 120–230."; return; }
+    S.health = x; save(); closeSheet(); render(); return;
   }
   if (a === "run-start") { const i = e.target.closest("[data-act]").dataset.i; closeSheet(); startRun(i === "" ? null : +i); return; }
   if (a === "swap") {
@@ -362,7 +560,7 @@ $("#wizard").addEventListener("submit", e => {
   if (!stepValid()) return;
   if (step < QUESTIONS.length - 1) { step++; renderWizard(); return; }
   draft.days = String(draft.wd.length);
-  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [], run: S ? S.run : { p: null, week: 0, done: {} }, runActive: S ? S.runActive : null };
+  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [], run: S ? S.run : { p: null, week: 0, done: {} }, runActive: S ? S.runActive : null, body: S ? S.body : [], health: S ? S.health : {}, settings: { voice: true, wake: true, remind: "18:00", ...(S ? S.settings : {}) } };
   save();
   tab = "heute";
   render();
@@ -375,9 +573,12 @@ function buildSteps(day, w) {
   const steps = [];
   if (day.kind === "cardio") {
     cardioItems(day, w, S.profile).forEach((t, i) => steps.push({ k: "cardio", i, text: t }));
+    stretchFor(day, S.profile).forEach((it, i, a) => steps.push({ k: "mob", ph: "stretch", i, n: a.length, it }));
     steps.push({ k: "clog" });
+  } else if (day.kind === "run") {
+    stretchFor(day, S.profile).forEach((it, i, a) => steps.push({ k: "mob", ph: "stretch", i, n: a.length, it }));
   } else {
-    steps.push({ k: "warm" });
+    warmupFor(day, S.profile).forEach((it, i, a) => steps.push({ k: "mob", ph: "warm", i, n: a.length, it }));
     day.rows.forEach((r, ri) => {
       const x = prescription(S.profile, r, w);
       for (let si = 0; si < x.sets; si++) {
@@ -387,6 +588,7 @@ function buildSteps(day, w) {
       }
     });
     if (day.fin) steps.push({ k: "fin" });
+    stretchFor(day, S.profile).forEach((it, i, a) => steps.push({ k: "mob", ph: "stretch", i, n: a.length, it }));
   }
   steps.push({ k: "done" });
   return steps;
@@ -396,13 +598,18 @@ function startWorkout() {
   const pl = plan(), w = S.week, di = selectedDay(pl), day = pl.days[di];
   const resume = S.active && S.active.w === w && S.active.di === di;
   P = { w, di, day, steps: buildSteps(day, w), idx: 0, elapsed: 0, paused: false, left: 0, total: 0, timed: false, sw: 0, swOn: false, confirm: false, form: {} };
-  if (resume) { P.idx = Math.min(S.active.idx, P.steps.length - 1); P.elapsed = S.active.elapsed || 0; }
+  if (resume) P.elapsed = S.active.elapsed || 0;
+  if (resume && S.active.v === 2) P.idx = Math.min(S.active.idx, P.steps.length - 1);
   else {
     // erledigte Sätze überspringen, wenn ein angefangener Tag fortgesetzt wird
     const first = P.steps.findIndex(s => s.k === "set" && !rec(w, di, s.ri).sets[s.si]);
     const anyDone = P.steps.some(s => s.k === "set" && rec(w, di, s.ri).sets[s.si]);
     if (anyDone && !dayProgress(day, di, w).ok && first > 0) P.idx = first;
   }
+  openPlayer();
+}
+
+function openPlayer() {
   unlockAudio();
   requestWake();
   $("#player").hidden = false;
@@ -412,28 +619,36 @@ function startWorkout() {
   clearInterval(tickT);
   tickT = setInterval(tick, 200);
 }
+// Nur Dehnen, z. B. nach einem Lauf
+function startStretch(day) {
+  P = { w: 0, di: -1, day, steps: buildSteps(day, 0), idx: 0, elapsed: 0, paused: false, left: 0, total: 0, timed: false, sw: 0, swOn: false, confirm: false, form: {}, only: true };
+  openPlayer();
+}
 
-function persistActive() { S.active = { w: P.w, di: P.di, idx: P.idx, elapsed: P.elapsed }; save(); }
+function persistActive() { if (P.only) return; S.active = { v: 2, w: P.w, di: P.di, idx: P.idx, elapsed: P.elapsed }; save(); }
 
 function enterStep() {
   const s = P.steps[P.idx];
   P.timed = false; P.left = 0; P.total = 0; P.sw = 0; P.swOn = false; P.confirm = false;
   if (s.k === "rest") { P.left = P.total = s.sec; }
-  if (s.k === "warm") { P.left = P.total = 300; P.timed = false; }
+  if (s.k === "mob") { P.left = P.total = s.it.sec; P.half = false; }
   if (s.k === "set") {
     const r = P.day.rows[s.ri], x = prescription(S.profile, r, P.w), rc = rec(P.w, P.di, s.ri), last = lastEntry(P.w, P.di, s.ri);
-    P.form = { kg: rc.kg || (last && last.kg) || (hasWeight(r.ex) ? String(kgStart(r.ex)) : ""), reps: rc.reps[s.si] || (s.si > 0 && rc.reps[s.si - 1]) || x.hi };
-    if (x.timed) { P.left = P.total = x.lo; }
+    P.sug = suggestLoad(x, last, P.w, kgStep(r.ex));
+    P.form = { kg: rc.kg || (P.sug && P.sug.kg) || (last && last.kg) || (hasWeight(r.ex) ? String(kgStart(r.ex)) : ""), reps: rc.reps[s.si] || (s.si > 0 && rc.reps[s.si - 1]) || (P.sug && P.sug.reps) || x.hi };
+    if (x.timed) { P.left = P.total = (P.sug && P.sug.reps) || x.lo; }
   }
   if (s.k === "clog") P.cform = P.cform || { act: S.cardio.length ? S.cardio[S.cardio.length - 1].act : "lauf", min: Math.max(1, Math.round(P.elapsed / 60)), km: "", hr: "", rpe: P.day.key === "hiit" ? 8 : 4 };
   if (s.k === "done") finishWorkout();
   else persistActive();
   renderPlayer();
+  speakStep(s);
 }
 
 function segs() {
-  const work = P.steps.filter(s => s.k !== "rest");
-  const pos = P.steps.slice(0, P.idx + 1).filter(s => s.k !== "rest").length - 1;
+  const seg = s => s.k !== "rest" && !(s.k === "mob" && s.i > 0);
+  const work = P.steps.filter(seg);
+  const pos = P.steps.slice(0, P.idx + 1).filter(seg).length - 1;
   return `<div class="segs" aria-hidden="true">${work.slice(0, -1).map((_, i) => `<i class="${i < pos ? "on" : i === pos ? "now" : ""}"></i>`).join("")}</div>`;
 }
 
@@ -441,18 +656,30 @@ function nextWork(from) {
   for (let i = from + 1; i < P.steps.length; i++) if (P.steps[i].k !== "rest") return P.steps[i];
   return null;
 }
+function phaseEnd(from) {
+  let i = from;
+  while (i < P.steps.length - 1 && P.steps[i].k === "mob" && P.steps[i].ph === P.steps[from].ph) i++;
+  return i;
+  return null;
+}
 
 function renderPlayer() {
   const s = P.steps[P.idx], w = P.w;
   let body = "";
   if (P.confirm) {
-    body = `<div class="confirm pop"><p><b>Training beenden?</b></p><p class="hint">Deine erledigten Sätze bleiben gespeichert. Du kannst später weitermachen.</p>
+    body = P.only ? `<div class="confirm pop"><p><b>Dehnen beenden?</b></p>
+      <div class="btns"><button type="button" class="btn" data-p="quit-yes">Beenden</button><button type="button" class="btn sec" data-p="quit-no">Weiter dehnen</button></div></div>` : `<div class="confirm pop"><p><b>Training beenden?</b></p><p class="hint">Deine erledigten Sätze bleiben gespeichert. Du kannst später weitermachen.</p>
       <div class="btns"><button type="button" class="btn" data-p="quit-yes">Beenden</button><button type="button" class="btn sec" data-p="quit-no">Weiter trainieren</button></div></div>`;
-  } else if (s.k === "warm") {
-    body = `<div><p class="pl-eyebrow">Vor dem Training</p><h2 class="pl-title">Aufwärmen</h2></div>
-      <ol class="wlist">${WARMUP.map(x => `<li>${esc(x)}</li>`).join("")}</ol>
-      ${ringHTML("Aufwärmen")}
-      <div class="pl-actions"><button type="button" class="btn-go" data-p="next">Los geht's</button></div>`;
+  } else if (s.k === "mob") {
+    const warm = s.ph === "warm", it = s.it, nx = P.steps[P.idx + 1], last = !(nx && nx.k === "mob" && nx.ph === s.ph);
+    const list = P.steps.filter(x => x.k === "mob" && x.ph === s.ph);
+    body = `<div><p class="pl-eyebrow">${warm ? "Aufwärmen" : "Dehnen"} · ${s.i + 1} von ${s.n} · ca. ${mobMinutes(list.map(x => x.it))} min</p><h2 class="pl-title">${esc(it.n)}</h2></div>
+      <p class="cue" style="font-size:1rem">${esc(it.txt)}${it.side ? " <b>Pro Seite.</b>" : ""}</p>
+      ${it.cue ? `<p class="last">${esc(it.cue)}</p>` : ""}
+      ${it.sec ? ringHTML(it.side ? (P.half ? "2. Seite" : "1. Seite") : warm ? "Aufwärmen" : "Halten") : ""}
+      <ol class="mlist" aria-label="Ablauf">${list.map((x, i) => `<li class="${i < s.i ? "on" : i === s.i ? "now" : ""}">${esc(x.it.n)}</li>`).join("")}</ol>
+      <div class="pl-actions"><button type="button" class="btn-go" data-p="next">${last ? (warm ? "Los geht's" : "Fertig") : "Weiter"}</button>
+        ${last ? "" : `<button type="button" class="btn sec block" data-p="skip-phase">${warm ? "Aufwärmen" : "Dehnen"} überspringen</button>`}</div>`;
   } else if (s.k === "set") {
     const r = P.day.rows[s.ri], ex = r.ex, x = prescription(S.profile, r, w), last = lastEntry(w, P.di, s.ri);
     const first = s.si === 0;
@@ -466,7 +693,8 @@ function renderPlayer() {
         ${hasWeight(ex) ? stepper("kg", "kg", P.form.kg || "–") : ""}
         ${stepper("reps", x.timed ? "Sekunden" : "Wdh.", P.form.reps)}
       </div>
-      ${last ? `<p class="last">Woche ${last.w + 1}: ${last.kg ? esc(last.kg) + " kg · " : ""}${last.reps.filter(Boolean).join(" / ") || "–"}</p>` : ""}
+      ${last ? `<p class="last">Woche ${last.w + 1}: ${last.kg ? esc(last.kg.replace(".", ",")) + " kg · " : ""}${last.reps.filter(Boolean).join(" / ") || "–"}</p>` : ""}
+      ${P.sug && first ? `<p class="sugg${P.sug.up ? " up" : ""}">${P.sug.up ? "↑ " : ""}${esc(P.sug.txt)}</p>` : ""}
       <div class="pl-actions">
         ${x.timed ? `<button type="button" class="btn sec block" data-p="timer">${P.timed ? "Timer stoppen" : `Timer starten (${P.left} s)`}</button>` : ""}
         <button type="button" class="btn-go" data-p="set-done">${ICON.check} Satz geschafft</button>
@@ -477,7 +705,8 @@ function renderPlayer() {
     if (n && n.k === "set") {
       const r = P.day.rows[n.ri], x = prescription(S.profile, r, w);
       nx = `<div class="next">${figure(r.ex.a, propOf(r.ex))}<div><small>Als Nächstes</small><b>${esc(r.ex.n)}</b><span>Satz ${n.si + 1} von ${x.sets} · ${x.reps}</span></div></div>`;
-    } else if (n && n.k === "fin") nx = `<div class="next">${figure("swing", "kb")}<div><small>Als Nächstes</small><b>Finisher</b><span>${esc(P.day.fin)}</span></div></div>`;
+    } else if (n && n.k === "mob") nx = `<div class="next nofig"><div><small>Als Nächstes</small><b>Dehnen</b><span>${n.n} Übungen · ca. ${mobMinutes(P.steps.filter(x => x.k === "mob" && x.ph === n.ph).map(x => x.it))} min</span></div></div>`;
+    else if (n && n.k === "fin") nx = `<div class="next">${figure("swing", "kb")}<div><small>Als Nächstes</small><b>Finisher</b><span>${esc(P.day.fin)}</span></div></div>`;
     body = `<div><p class="pl-eyebrow">Durchatmen</p><h2 class="pl-title">Pause</h2></div>
       ${ringHTML("Pause")}
       <div class="btns" style="justify-content:center"><button type="button" class="btn sec" data-p="minus">−15 s</button><button type="button" class="btn sec" data-p="plus">+15 s</button></div>
@@ -496,6 +725,9 @@ function renderPlayer() {
       <p class="hint">Mit Dauer, Strecke und Puls siehst du im Verlauf, wie sich deine Ausdauer entwickelt. Felder ohne Wert bleiben leer.</p>
       ${cardioForm(P.cform)}
       <div class="pl-actions"><button type="button" class="btn-go" data-p="clog-save">${ICON.check} Speichern</button><button type="button" class="btn sec block" data-p="clog-skip">Ohne Eintrag abschließen</button></div>`;
+  } else if (s.k === "done" && P.only) {
+    body = `<div class="done-hero pop"><div class="check">${ICON.check}</div><p class="disp">Gedehnt</p><p>${fmt(P.elapsed)} min · gute Erholung</p></div>
+      <div class="pl-actions"><button type="button" class="btn-go" data-p="close">Fertig</button></div>`;
   } else if (s.k === "done") {
     const h = S.history[S.history.length - 1];
     body = `<div class="done-hero pop"><div class="check">${ICON.check}</div><p class="disp">Geschafft</p><p>${esc(P.day.name)} · Woche ${w + 1}</p></div>
@@ -513,9 +745,9 @@ function renderPlayer() {
   const done = s.k === "done";
   $("#player").innerHTML = `<div class="pl">
     <div class="pl-top">
-      ${done ? "<span></span>" : `<button type="button" class="icon-btn" data-p="quit" aria-label="Training beenden">${ICON.close}</button>`}
+      <div class="pl-side">${done ? "" : `<button type="button" class="icon-btn" data-p="quit" aria-label="${P.only ? "Dehnen beenden" : "Training beenden"}">${ICON.close}</button>`}${voiceBtn("p")}</div>
       <button type="button" class="clock${P.paused ? " paused" : ""}" data-p="pause" aria-label="${P.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${done ? "disabled" : ""}>${P.paused ? ICON.play : ICON.pause}<span id="p-clock">${fmt(P.elapsed)}</span></button>
-      ${P.idx > 0 && !done ? `<button type="button" class="icon-btn" data-p="prev" aria-label="Zurück">${ICON.back}</button>` : "<span></span>"}
+      <div class="pl-side end">${wakeBadge()}${P.idx > 0 && !done ? `<button type="button" class="icon-btn" data-p="prev" aria-label="Zurück">${ICON.back}</button>` : ""}</div>
     </div>
     ${done ? "" : segs()}
     ${body}
@@ -550,16 +782,21 @@ function tick() {
   const c = document.getElementById("p-clock");
   if (c) c.textContent = fmt(P.elapsed);
   if (P.swOn) { P.sw += dt; const e = document.getElementById("p-sw"); if (e) e.textContent = fmt(P.sw); }
-  const counting = s.k === "rest" || (s.k === "set" && P.timed) || (s.k === "warm" && P.total);
+  const counting = s.k === "rest" || (s.k === "set" && P.timed) || (s.k === "mob" && P.total);
   if (counting && P.left > 0) {
     const before = Math.ceil(P.left);
     P.left = Math.max(0, P.left - dt);
     const after = Math.ceil(P.left);
     if (after !== before && after <= 3 && after > 0) beep(660, .08);
+    if (after !== before && after === 10 && s.k === "rest" && P.total > 20) speakNext();
+    if (s.k === "mob" && s.it.side && !P.half && P.left <= P.total / 2) {
+      P.half = true; beep(880, .15); vibrate(150); say("Seite wechseln.");
+      const sub = document.querySelector("#p-left + .sub"); if (sub) sub.textContent = "2. Seite";
+    }
     updateRing();
     if (P.left === 0) {
       beep(990, .25); vibrate([200, 100, 200]);
-      if (s.k === "rest") next();
+      if (s.k === "rest" || s.k === "mob") next();
       else if (s.k === "set") completeSet();
     }
   }
@@ -583,6 +820,7 @@ function prev() {
 }
 
 function finishWorkout() {
+  if (P.only) { releaseWake(); return; }
   const day = P.day, w = P.w, di = P.di;
   let sets = 0, reps = 0, vol = 0;
   day.rows.forEach((r, ri) => {
@@ -615,14 +853,16 @@ $("#player").addEventListener("click", e => {
   const a = b.dataset.p, s = P.steps[P.idx];
   switch (a) {
     case "next": next(); break;
+    case "skip-phase": P.idx = phaseEnd(P.idx); enterStep(); break;
+    case "voice": toggleVoice(); renderPlayer(); break;
     case "prev": prev(); break;
     case "pause": P.paused = !P.paused; renderPlayer(); break;
     case "quit": P.confirm = true; renderPlayer(); break;
     case "quit-no": P.confirm = false; renderPlayer(); break;
-    case "quit-yes": persistActive(); closePlayer(); break;
+    case "quit-yes": persistActive(); try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {} closePlayer(); break;
     case "close": closePlayer(); break;
     case "set-done": completeSet(); break;
-    case "timer": P.timed = !P.timed; renderPlayer(); break;
+    case "timer": P.timed = !P.timed; if (P.timed) say(`Halten, ${durWords(Math.ceil(P.left))}.`); renderPlayer(); break;
     case "plus": P.left += 15; P.total = Math.max(P.total, P.left); updateRing(); break;
     case "minus": P.left = Math.max(1, P.left - 15); updateRing(); break;
     case "sw": P.swOn = !P.swOn; renderPlayer(); break;
@@ -652,8 +892,30 @@ $("#player").addEventListener("click", e => {
 
 // ---------- Laufen: Plan, Kilometer, Einrichtung ----------
 const kmFmt = m => (Math.floor(m / 10) / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// Nach dem Lauf runden wie beim Speichern, unterwegs abschneiden (Kilometerzähler)
+const kmEnd = m => (Math.round(m / 10) / 100).toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const km1 = k => (Math.round(k * 10) / 10).toLocaleString("de-DE");
 // Anstrengung je Abschnitt, wenn keine 5-km-Zeit bekannt ist
+const distName = d => d >= 1000 ? `${d / 1000} km` : `${d} m`;
+const distWords = d => d === 1000 ? "einen Kilometer" : `${d / 1000} Kilometer`;
+// Strecke als SVG (Norden oben), Kilometer-Punkte, Start hohl, Ziel gefüllt
+function mapHTML(pts) {
+  const sh = pts && pts.length >= 2 ? trackShape(pts, 320, 200, 14) : null;
+  if (!sh) return "";
+  return `<figure class="map"><svg viewBox="0 0 ${sh.w} ${sh.h}" role="img" aria-label="Laufstrecke">
+    <path d="${sh.d}" class="map-line"/>
+    ${sh.kms.map(([x, y], i) => `<g class="map-km"><circle cx="${x}" cy="${y}" r="8"/><text x="${x}" y="${y}">${i + 1}</text></g>`).join("")}
+    <circle cx="${sh.start[0]}" cy="${sh.start[1]}" r="5" class="map-start"/><circle cx="${sh.end[0]}" cy="${sh.end[1]}" r="5" class="map-end"/>
+  </svg><figcaption><span><i class="map-start"></i>Start</span><span><i class="map-end"></i>Ziel</span><span>N ↑</span></figcaption></figure>`;
+}
+// Pulsbereich für eine Zone oder Zonenspanne, wenn Angaben vorhanden
+const zonesNow = () => S.health && (S.health.age || S.health.max) ? hrZones(S.health) : null;
+function zoneText(z) {
+  const H = zonesNow();
+  if (!H || z == null) return "";
+  const [lo, hi] = Array.isArray(z) ? z : [z, z], a = H.zones[lo - 1], b = H.zones[hi - 1];
+  return `Puls ${a.lo}–${b.hi}`;
+}
 const EFFORT = { run: "locker · 4–5/10", warm: "sehr locker", cool: "sehr locker", work: "zügig · 8/10", tempo: "zügig · 7/10", rest: "ganz locker traben", walk: "zügig gehen" };
 const RUN_RPE = { easy: 4, long: 5, int: 8, tempo: 7, walk: 4 };
 let runDraft = null;
@@ -768,7 +1030,7 @@ function openRunSheet(i) {
     <div><p class="pl-eyebrow">${WEEKDAYS_LONG[s.wd]} · Woche ${S.run.week + 1}</p><h2>${esc(s.name)}</h2>
     <div class="chips" style="margin-top:8px"><span class="chip dark">${s.min} min</span><span class="chip">${s.segs.length} ${s.segs.length === 1 ? "Abschnitt" : "Abschnitte"}</span>${runDone(S.run.week, i) ? `<span class="chip ok">✓ erledigt</span>` : ""}</div></div>
     <ol class="how">${s.text.split(" · ").map(x => `<li>${esc(x)}</li>`).join("")}</ol>
-    <p class="cue"><b>So läufst du:</b> ${esc(info.h)}</p>
+    <p class="cue"><b>So läufst du:</b> ${esc(info.h)}${zoneText(sessZone(s.key)) ? ` ${zoneText(sessZone(s.key))} Schläge pro Minute.` : ""}</p>
     ${runPaceList(s.segs)}
     <p class="hint">Die App sagt jeden Abschnitt mit Ton, Vibration und Stimme an und zählt die Kilometer per GPS.</p>
     <div class="btns"><button type="button" class="btn sec" data-act="close">Schließen</button><button type="button" class="btn" data-act="run-start" data-i="${i}" style="flex:1">${ICON.play} Lauf starten</button></div>
@@ -785,8 +1047,11 @@ function startRun(i, free = false, week = S.run.week) {
   const w = free ? null : week, sess = free ? null : runWeek(w)[i];
   const resume = S.runActive && S.runActive.i === i && S.runActive.w === w;
   R = { i, w, sess, segs: sess ? sess.segs : [], t: 0, off: 0, last: Date.now(), paused: false, tr: { m: 0 }, extra: 0, base: 0,
-    gps: "aus", acc: null, watch: null, segI: -1, splits: [], confirm: false, saving: false, cform: null };
-  if (resume) { R.paused = !!S.runActive.paused; R.t = S.runActive.t; R.off = S.runActive.off || 0; R.base = S.runActive.m || 0; R.splits = S.runActive.splits || []; }
+    gps: "aus", acc: null, watch: null, segI: -1, splits: [], confirm: false, saving: false, cform: null, pts: [], brk: false };
+  if (resume) {
+    R.paused = !!S.runActive.paused; R.t = S.runActive.t; R.off = S.runActive.off || 0; R.base = S.runActive.m || 0; R.splits = S.runActive.splits || [];
+    R.pts = decodeTrack(S.runActive.trk || ""); R.brk = R.pts.length > 0;
+  }
   R.segI = sess ? segAt(R.segs, segPos()).i : -1;
   unlockAudio(); requestWake(); startGps();
   $("#player").hidden = false;
@@ -798,7 +1063,7 @@ function startRun(i, free = false, week = S.run.week) {
 
 const runM = () => Math.max(0, R.base + (R.tr.m || 0) + R.extra);
 const segPos = () => R.t + R.off;
-function persistRun() { S.runActive = { i: R.i, w: R.w, paused: R.paused, t: Math.round(R.t), off: Math.round(R.off), m: Math.round(runM()), splits: R.splits }; save(); }
+function persistRun() { S.runActive = { i: R.i, w: R.w, paused: R.paused, t: Math.round(R.t), off: Math.round(R.off), m: Math.round(runM()), splits: R.splits, trk: encodeTrack(R.pts) }; save(); }
 
 function startGps() {
   if (!("geolocation" in navigator)) { R.gps = "nicht verfügbar"; return; }
@@ -809,22 +1074,32 @@ function startGps() {
       const c = pos.coords;
       R.acc = Math.round(c.accuracy);
       R.gps = c.accuracy > MAX_ACC ? "ungenau" : "ok";
-      if (!R.paused && !R.saving) R.tr = trackAdd(R.tr, { lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() });
+      if (!R.paused && !R.saving) {
+        const prev = R.tr.last;
+        R.tr = trackAdd(R.tr, { lat: c.latitude, lon: c.longitude, acc: c.accuracy, t: pos.timestamp || Date.now() });
+        if (R.tr.last && R.tr.last !== prev) addPoint();
+      }
       runText();
     }, err => { if (R) { R.gps = err.code === 1 ? "nicht erlaubt" : "kein Signal"; runText(); } },
     { enableHighAccuracy: true, maximumAge: 0, timeout: 30000 });
   } catch (e) { R.gps = "nicht verfügbar"; }
 }
+// Strecke für Karte und Bestzeiten: t = Stoppuhr, m = GPS-Meter; brk = erster Punkt nach einer Pause
+function addPoint() {
+  const f = R.tr.last;
+  R.pts.push({ lat: f.lat, lon: f.lon, t: Math.round(R.t), m: Math.round(R.base + (R.tr.m || 0)), ...(R.brk ? { brk: true } : {}) });
+  R.brk = false;
+}
 function stopGps() { try { R && R.watch != null && navigator.geolocation.clearWatch(R.watch); } catch (e) {} }
 
 function say(t) {
   try {
-    if (!window.speechSynthesis) return;
+    if (!window.speechSynthesis || (S && S.settings && !S.settings.voice)) return;
     const u = new SpeechSynthesisUtterance(t); u.lang = "de-DE"; u.rate = 1.05;
     speechSynthesis.cancel(); speechSynthesis.speak(u);
   } catch (e) {}
 }
-const durWords = s => s % 60 ? `${Math.floor(s / 60) ? Math.floor(s / 60) + " Minuten " : ""}${s % 60} Sekunden` : s === 60 ? "eine Minute" : `${s / 60} Minuten`;
+const durWords = s => (s = Math.round(s)) === 60 ? "eine Minute" : s < 120 ? `${s} Sekunden` : `${Math.floor(s / 60)} Minuten${s % 60 ? ` ${s % 60} Sekunden` : ""}`;
 function announce(seg, first) {
   beep(990, .3); vibrate(seg.k === "work" || seg.k === "tempo" ? [300, 120, 300, 120, 300] : [400]);
   const tp = targetPace(S.run.p?.t5, seg.k, S.run.p?.goal);
@@ -883,7 +1158,14 @@ const gpsText = () => R.gps === "ok" ? `GPS ±${R.acc} m` : R.gps === "ungenau" 
 function renderRun() {
   if (!R) return;
   let body;
-  if (R.saving) {
+  if (R.done) {
+    const st = stretchFor(R.done, S.profile);
+    body = `<div class="done-hero pop"><div class="check">${ICON.check}</div><p class="disp">Gespeichert</p><p>${esc(R.done.name)} · ${kmEnd(R.doneM)} km · ${fmt(R.t)}</p></div>
+      ${R.records.length ? `<p class="record">★ Neue Bestzeit: ${R.records.map(d => `${distName(d)} in ${fmt(R.best[d])}`).join(" · ")}</p>` : ""}
+      ${mapHTML(R.pts)}
+      <p class="hint" style="text-align:center">Jetzt ${st.length} Dehnübungen für Waden, Oberschenkel und Hüfte, ca. ${mobMinutes(st)} min.</p>
+      <div class="pl-actions"><button type="button" class="btn-go" data-r="stretch">Dehnen</button><button type="button" class="btn sec block" data-r="close">Fertig</button></div>`;
+  } else if (R.saving) {
     body = `<div><p class="pl-eyebrow">Lauf speichern</p><h2 class="pl-title">Wie lief's?</h2></div>
       <div class="kvs"><div><small>Zeit</small><span class="big">${fmt(R.t)}</span></div><div><small>Strecke</small><span class="big">${kmFmt(runM())} km</span></div></div>
       <p class="hint">Strecke und Dauer kannst du noch korrigieren.</p>
@@ -903,7 +1185,7 @@ function renderRun() {
         <div class="seg-top"><span class="seg-k">${SEG[seg.k]}</span><span class="seg-n">${R.segI + 1} / ${R.segs.length}</span></div>
         <span class="seg-left" id="r-left">${fmt(segAt(R.segs, segPos()).left)}</span>
         <div class="seg-bar"><i id="r-bar"></i></div>
-        <div class="seg-foot"><span>${tp ? `Ziel ${fmtPace(tp)} /km` : EFFORT[seg.k]}</span><span>${nx ? `Danach: ${SEG[nx.k]} ${fmt(nx.sec)}` : "Danach: geschafft"}</span></div>
+        <div class="seg-foot"><span>${tp ? `Ziel ${fmtPace(tp)} /km` : EFFORT[seg.k]}${zoneText(segZone(seg.k)) ? ` · ${zoneText(segZone(seg.k))}` : ""}</span><span>${nx ? `Danach: ${SEG[nx.k]} ${fmt(nx.sec)}` : "Danach: geschafft"}</span></div>
       </div>`;
     } else if (done) segHTML = `<div class="seg-card ok"><div class="seg-top"><span class="seg-k">Geschafft</span></div><p style="margin:0">Alle Abschnitte erledigt. Du kannst auslaufen oder den Lauf beenden.</p></div>`;
     body = `<div><p class="pl-eyebrow">${s ? `Woche ${R.w + 1} · ${WEEKDAYS_LONG[s.wd]}` : "Freier Lauf"}</p><h2 class="pl-title">${esc(s ? s.name : "Laufen")}</h2></div>
@@ -922,9 +1204,9 @@ function renderRun() {
   }
   $("#player").innerHTML = `<div class="pl run-pl">
     <div class="pl-top">
-      <button type="button" class="icon-btn" data-r="quit" aria-label="Lauf verwerfen">${ICON.close}</button>
-      <button type="button" class="clock${R.paused || R.saving ? " paused" : ""}" data-r="pause" aria-label="${R.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${R.saving ? "disabled" : ""}>${R.paused || R.saving ? ICON.play : ICON.pause}<span id="r-clock">${fmt(R.t)}</span></button>
-      ${R.sess && !R.saving && R.segI < R.segs.length ? `<button type="button" class="icon-btn" data-r="skip" aria-label="Abschnitt überspringen"><svg viewBox="0 0 24 24"><path d="M6 5l8 7-8 7M18 5v14"/></svg></button>` : "<span></span>"}
+      <div class="pl-side">${R.done ? "" : `<button type="button" class="icon-btn" data-r="quit" aria-label="Lauf verwerfen">${ICON.close}</button>`}${voiceBtn("r")}</div>
+      <button type="button" class="clock${R.paused || R.saving ? " paused" : ""}" data-r="pause" aria-label="${R.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${R.saving || R.done ? "disabled" : ""}>${R.paused || R.saving ? ICON.play : ICON.pause}<span id="r-clock">${fmt(R.t)}</span></button>
+      <div class="pl-side end">${wakeBadge()}${R.sess && !R.saving && !R.done && R.segI < R.segs.length ? `<button type="button" class="icon-btn" data-r="skip" aria-label="Abschnitt überspringen"><svg viewBox="0 0 24 24"><path d="M6 5l8 7-8 7M18 5v14"/></svg></button>` : ""}</div>
     </div>
     ${body}
   </div>`;
@@ -946,8 +1228,9 @@ $("#player").addEventListener("click", e => {
   unlockAudio();
   switch (b.dataset.r) {
     case "pause":
+      if (R.done) break;
       R.paused = !R.paused; R.last = Date.now();
-      if (!R.paused) R.tr = trackResume(R.tr);
+      if (!R.paused) { R.tr = trackResume(R.tr); R.brk = R.pts.length > 0; }
       persistRun(); renderRun(); break;
     case "km+": R.extra += 100; runText(); break;
     case "km-": R.extra = Math.max(-(R.base + (R.tr.m || 0)), R.extra - 100); runText(); break;
@@ -961,15 +1244,26 @@ $("#player").addEventListener("click", e => {
       R.cform = { act: "lauf", min: Math.max(1, Math.round(R.t / 60)), km: runM() >= 100 ? (Math.round(runM() / 10) / 100).toFixed(2) : "", hr: "", rpe: key ? RUN_RPE[key] : 5 };
       persistRun(); renderRun(); break;
     }
-    case "back": R.saving = false; R.last = Date.now(); R.tr = trackResume(R.tr); renderRun(); break;
+    case "back": R.saving = false; R.last = Date.now(); R.tr = trackResume(R.tr); R.brk = R.pts.length > 0; renderRun(); break;
     case "save": {
       const x = normalize({ ...readCardioForm($("#player")), src: R.sess ? "laufplan" : "lauf", name: R.sess ? R.sess.name : "Freier Lauf" });
       if (!x) { $("#cf-err").textContent = "Bitte eine Dauer in Minuten eintragen."; break; }
+      const prevBest = bestOf(S.cardio);
+      if (R.pts.length >= 2) { x.track = encodeTrack(simplify(R.pts)); x.best = bestEfforts(R.pts); }
+      // Erst ab dem zweiten GPS-Lauf von Rekorden sprechen
+      R.records = x.best ? isRecord(x.best, prevBest).filter(d => prevBest[d]) : [];
       addCardio(x);
       if (R.sess) S.run.done[`${R.w}-${R.i}`] = true;
       S.history.push({ date: x.date, name: R.sess ? R.sess.name : "Freier Lauf", run: true, w: R.w ?? 0, dur: Math.round(R.t), sets: 0, reps: 0, vol: 0, cardio: { min: x.min, km: x.km, rpe: x.rpe } });
-      S.runActive = null; save(); closeRun(); break;
+      S.runActive = null; save();
+      clearInterval(runT); stopGps();
+      R.paused = true;
+      R.best = x.best; R.done = { kind: "run", key: R.sess ? R.sess.key : "easy", name: R.sess ? R.sess.name : "Freier Lauf" }; R.doneM = runM(); R.saving = false;
+      renderRun(); say(R.records.length ? `Lauf gespeichert. Neue Bestzeit über ${R.records.map(distWords).join(" und ")}.` : "Lauf gespeichert."); break;
     }
+    case "close": closeRun(); break;
+    case "stretch": { const d = R.done; closeRun(); startStretch(d); break; }
+    case "voice": toggleVoice(); renderRun(); break;
     case "quit": case "discard": R.confirm = true; R.saving = false; renderRun(); break;
     case "discard-no": R.confirm = false; renderRun(); break;
     case "discard-yes": S.runActive = null; save(); closeRun(); break;
@@ -989,8 +1283,52 @@ function beep(f, d) {
   } catch (e) {}
 }
 function vibrate(p) { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} }
-async function requestWake() { try { wake = await navigator.wakeLock?.request("screen"); } catch (e) { wake = null; } }
+// Bildschirm bleibt an, solange Training oder Lauf offen sind. Das System gibt die Sperre frei,
+// wenn die App in den Hintergrund geht; beim Zurückkehren wird sie neu angefordert.
+async function requestWake() {
+  if (!S.settings.wake || !navigator.wakeLock || wake || document.visibilityState !== "visible") return updateWake();
+  try {
+    wake = await navigator.wakeLock.request("screen");
+    wake.addEventListener("release", () => { wake = null; updateWake(); });
+  } catch (e) { wake = null; }
+  updateWake();
+}
 function releaseWake() { try { wake && wake.release(); } catch (e) {} wake = null; }
+const wakeBadge = () => S.settings.wake && navigator.wakeLock ? `<span class="wake${wake ? " on" : ""}" id="wake" title="${wake ? "Bildschirm bleibt an" : "Bildschirm kann ausgehen"}" aria-label="${wake ? "Bildschirm bleibt an" : "Bildschirm kann ausgehen"}" role="img"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></span>` : "";
+function updateWake() { const b = document.getElementById("wake"); if (b) b.outerHTML = wakeBadge(); }
+
+// ---------- Sprachansagen ----------
+function voiceBtn(attr) {
+  const on = S.settings.voice;
+  return `<button type="button" class="icon-btn" data-${attr}="voice" aria-pressed="${on}" aria-label="Sprachansagen ${on ? "aus" : "an"}schalten"><svg viewBox="0 0 24 24"><path d="M4 9v6h4l5 4V5L8 9z"/>${on ? '<path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>' : '<path d="M17 9l5 6M22 9l-5 6"/>'}</svg></button>`;
+}
+function toggleVoice() {
+  S.settings.voice = !S.settings.voice; save();
+  if (!S.settings.voice) { try { speechSynthesis.cancel(); } catch (e) {} } else say("Sprachansagen an.");
+}
+const repWords = r => String(r).replace(/[–-]/, " bis ");
+const kgWords = kg => String(kg).replace(".", ",") + " Kilo";
+function speakStep(s) {
+  if (!P) return;
+  if (s.k === "mob") {
+    const first = s.i === 0, it = s.it;
+    say(`${first ? (s.ph === "warm" ? "Aufwärmen. " : "Dehnen. ") : ""}${it.n}${it.sec ? `, ${durWords(it.side ? it.sec / 2 : it.sec)}${it.side ? " pro Seite" : ""}` : ""}.`);
+  } else if (s.k === "set") {
+    const r = P.day.rows[s.ri], x = prescription(S.profile, r, P.w), kg = hasWeight(r.ex) && P.form.kg && P.form.kg !== "–" ? `, mit ${kgWords(P.form.kg)}` : "";
+    say(`${s.si === 0 ? r.ex.n + ". " : ""}Satz ${s.si + 1} von ${x.sets}. ${x.timed ? durWords(P.left) + " halten" : repWords(x.reps) + " Wiederholungen"}${r.ex.side ? " pro Seite" : ""}${kg}.`);
+  } else if (s.k === "rest") say(`Pause, ${durWords(s.sec)}.`);
+  else if (s.k === "fin") say("Zum Schluss der Finisher.");
+  else if (s.k === "cardio") say(s.text);
+  else if (s.k === "done") say(P.only ? "Dehnen geschafft. Gute Erholung." : "Training geschafft. Stark!");
+}
+function speakNext() {
+  const n = nextWork(P.idx);
+  if (!n) return;
+  if (n.k === "set") { const r = P.day.rows[n.ri]; say(`Noch 10 Sekunden. Als Nächstes ${n.si === 0 ? r.ex.n : `Satz ${n.si + 1}`}.`); }
+  else if (n.k === "mob") say("Noch 10 Sekunden. Danach dehnen.");
+  else if (n.k === "fin") say("Noch 10 Sekunden. Danach der Finisher.");
+  else say("Noch 10 Sekunden.");
+}
 // Im Hintergrund läuft die Zeit weiter: beim Zurückkehren wird die verstrichene Zeit nachgeholt
 document.addEventListener("visibilitychange", () => {
   if (P && document.visibilityState === "visible") { tick(); requestWake(); }

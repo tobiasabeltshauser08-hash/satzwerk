@@ -2,7 +2,7 @@
 // Aufruf: node tests/test.js
 import assert from 'node:assert/strict';
 import { EX, QUESTIONS, SPLITS, DEFAULT, SCHEDULE } from '../js/data.js';
-import { buildPlan, prescription, minutes, candidates } from '../js/plan.js';
+import { buildPlan, prescription, minutes, candidates, suggestLoad } from '../js/plan.js';
 import { ANIMS } from '../js/figure.js';
 
 const TOOLS = QUESTIONS.find(q => q.f === 'tools').o.map(o => o[0]);
@@ -70,6 +70,28 @@ for (const goal of opts('goal')) for (const focus of opts('focus')) for (const l
 }
 // Alte Profile mit Anzahl statt Wochentagen funktionieren weiter
 assert.deepEqual(buildPlan({ ...DEFAULT, wd: undefined, days: '4' }).days.map(d => d.wd), SCHEDULE[4]);
+
+
+// Steigerungs-Vorschlag
+{
+  const x = { lo: 8, hi: 10, timed: false };
+  assert.equal(suggestLoad(x, null, 1, 2.5), null);
+  assert.equal(suggestLoad(x, { w: 0, kg: '60', reps: [] }, 1, 2.5), null);
+  let s = suggestLoad(x, { w: 0, kg: '60', reps: [10, 10, 11] }, 1, 2.5);
+  assert.equal(s.kg, '62.5'); assert.ok(s.up);
+  s = suggestLoad(x, { w: 0, kg: '60', reps: [10, 9, 8] }, 1, 2.5);
+  assert.equal(s.kg, '60'); assert.ok(!s.up);
+  s = suggestLoad(x, { w: 0, kg: '60', reps: [8, 7] }, 1, 2.5);
+  assert.equal(s.kg, '60'); assert.match(s.txt, /8 Wdh/);
+  s = suggestLoad(x, { w: 2, kg: '60', reps: [10, 10] }, 3, 2.5);
+  assert.equal(s.kg, '55'); assert.ok(!s.up);
+  s = suggestLoad(x, { w: 0, kg: '16', reps: [10, 10] }, 1, 2);
+  assert.equal(s.kg, '18');
+  s = suggestLoad(x, { w: 0, kg: '', reps: [12, 10] }, 1, 1);
+  assert.equal(s.kg, null); assert.ok(s.up);
+  s = suggestLoad({ lo: 30, hi: 45, timed: true }, { w: 0, kg: '', reps: [45, 45] }, 1, 1);
+  assert.equal(s.reps, 50);
+}
 
 console.log(`OK: ${EX.length} Übungen, ${plans} Profile geprüft`);
 
