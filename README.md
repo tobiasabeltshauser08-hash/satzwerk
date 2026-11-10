@@ -4,18 +4,20 @@ Fitness-App (PWA), die dir einen Trainingsplan erstellt und dich durch jedes Tra
 Sie lässt sich auf Handy und PC installieren und läuft danach auch offline.
 
 - **Fragen-Assistent:** Ziel, Schwerpunkt (z. B. Oberkörper), Erfahrung, Trainingstage, Dauer und vorhandene Geräte
-- **Trainingsplan in 4-Wochen-Blöcken:** Einstieg, Aufbau, Steigerung, Deload
+- **Trainingsplan in 4-Wochen-Blöcken:** Einstieg, Aufbau, Steigerung, Deload. Die Woche wechselt montags automatisch, wenn du in der alten Woche trainiert hast. Nach dem Deload startest du mit einem Knopf den nächsten Block; die Gewichtsvorschläge bauen dann auf deiner Woche 3 auf
+- **Übung tauschen:** im Übungs-Sheet oder direkt im Training vor dem ersten Satz (Gerät belegt, Schulter zwickt). „Zuletzt“ und Gewichtsvorschlag gehören immer zur jeweiligen Übung
+- **Kraft-Fortschritt:** je Übung eine Kurve über alle Wochen und Blöcke mit geschätztem Maximalgewicht für 1 Wiederholung (Epley-Formel), ohne Gewicht die meisten Wiederholungen bzw. längste Haltezeit
 - **Geführtes Training:** Aufwärmprogramm passend zum Trainingstag (Puls, Mobilität, Rampensätze), dann jede Übung Satz für Satz, Pausen-Countdown mit Ton und Vibration, Finisher und zum Schluss eine Dehnroutine für die trainierten Muskeln (auch nach Cardio-Tagen und Läufen)
 - **Steigerung:** Die App schlägt aus der letzten Woche das Gewicht für heute vor (alle Sätze bis zum oberen Wiederholungsziel geschafft → mehr Gewicht, im Deload etwas leichter)
 - **Sprachansagen:** Übung, Satz, Wiederholungen und Gewicht, Pausen mit Vorschau auf die nächste Übung, Seitenwechsel beim Dehnen; im Training und Lauf ein- und ausschaltbar
 - **Bildschirm bleibt an** während Training, Lauf und Dehnen (Wake Lock, abschaltbar)
 - **Erinnerungen:** Wöchentliche Kalendertermine mit Alarm für alle Trainings- und Lauftage (.ics für iPhone, Android und PC)
-- **Datensicherung:** Backup als Datei speichern und wieder laden
+- **Datensicherung:** Backup als Datei speichern und wieder laden; nach 30 Tagen ohne Backup erinnert die App daran. Die App bittet den Browser, die Daten dauerhaft zu behalten, und warnt, falls Speichern fehlschlägt
 - **Vorlage für jede Übung:** animierte Figur, die die Bewegung vormacht, Anleitung in 3 Schritten und wichtigster Technik-Hinweis
 - **Stoppuhr** für die gesamte Trainingszeit, plus Timer für Halteübungen (z. B. Unterarmstütz, Toter Hang)
 - Gewicht und Wiederholungen je Satz eintragen; die App zeigt, was du letzte Woche geschafft hast
 - **Verlauf:** Trainings, Trainingszeit, Sätze und bewegtes Gewicht
-- **Laufen (eigener Tab):** 8-Wochen-Laufplan nach Ziel (Anfangen, Fit bleiben, 5 km, 10 km, Halbmarathon), Niveau und frei wählbaren Lauftagen. Konkrete Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche, mit Entlastungswochen. Mit aktueller 5-km-Zeit zeigt die App ein Zieltempo je Abschnitt
+- **Laufen (eigener Tab):** freie Läufe mit GPS auch ohne Plan; optional ein 8-Wochen-Laufplan nach Ziel (Anfangen, Fit bleiben, 5 km, 10 km, Halbmarathon), Niveau und frei wählbaren Lauftagen. Konkrete Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche, mit Entlastungswochen. Mit aktueller 5-km-Zeit zeigt die App ein Zieltempo je Abschnitt. Nach 8 Wochen schlägt sie den nächsten Plan vor (nächstes Ziel, 5-km-Zeit aus deiner GPS-Bestzeit)
 - **Lauf-Modus:** Stoppuhr, Intervall-Ansage mit Ton, Vibration und Stimme, Restzeit des Abschnitts, GPS-Kilometerzähler mit Ø-Tempo und Ansage je Kilometer, Korrektur ±0,1 km (z. B. Laufband), Puls-Zielbereich je Abschnitt. Kilometer pro Woche, Jahr und gesamt
 - **Strecke und Bestzeiten:** Jeder GPS-Lauf wird als Karte gespeichert (mit Kilometer-Punkten). Die App findet die schnellsten 1, 5 und 10 km in jedem Lauf und meldet neue Bestzeiten
 - **Puls-Zonen:** Aus Alter, Ruhepuls und optional gemessenem Maximalpuls fünf Trainingszonen (Karvonen)
@@ -58,6 +60,7 @@ Prüft alle Übungsdaten und erzeugt Pläne für 3600 Profilkombinationen (Ziel,
 `tests/track.test.js` prüft Speicherformat, Vereinfachung, Bestzeiten und Kartenform der GPS-Strecke, `tests/health.test.js` Puls-Zonen, Körperwerte und Ernährung.
 `tests/run.test.js` prüft Laufplan, Abschnitts-Zeitleiste und GPS-Strecke.
 `tests/endurance.test.js` prüft Eingaben, Tempo und die Wochenauswertung des Ausdauer-Trackings.
+`tests/progress.test.js` prüft die Umstellung des Logs auf Blöcke, „Zuletzt“ über Blockgrenzen, den Wochenwechsel, den Kraft-Fortschritt, die Backup-Erinnerung und den Vorschlag für den nächsten Laufplan.
 
 ## Aufbau
 
@@ -70,6 +73,7 @@ Prüft alle Übungsdaten und erzeugt Pläne für 3600 Profilkombinationen (Ziel,
 | `js/backup.js` | Backup speichern/laden (Prüfung) und Kalender-Erinnerungen (.ics) |
 | `js/track.js` | GPS-Strecke: kompakt speichern, vereinfachen, Bestzeiten über 1/5/10 km, Form für die Karte |
 | `js/health.js` | Puls-Zonen, Körperwerte und Ernährungs-Richtwerte |
+| `js/progress.js` | Log je Block und Übung, Wochen-/Blockwechsel, Kraft-Fortschritt (1RM), Backup-Erinnerung, nächster Laufplan |
 | `js/run.js` | Laufplan (8 Wochen), Zieltempo, Intervall-Zeitleiste, GPS-Strecke und Kilometer |
 | `js/figure.js` | Animierte Übungsvorlagen (Strichfigur aus Gelenkwinkeln) |
 | `js/app.js` | Oberfläche, Fragen-Assistent, Trainingsmodus mit Stoppuhr und Pausen-Timer |

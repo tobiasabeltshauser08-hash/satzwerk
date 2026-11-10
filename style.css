@@ -400,3 +400,25 @@ details.how-box .how { padding-bottom: 14px; }
 .zones .zn { font: 800 1rem var(--f-display); font-stretch: 125%; }
 .zones small { display: block; color: var(--muted); font-size: .78rem; }
 .zones .zr { font: 600 .95rem var(--f-mono); white-space: nowrap; }
+
+/* Gesperrte Uhr (Abschluss-Bildschirme) sieht nicht mehr antippbar aus */
+.clock:disabled { opacity: .55; cursor: default; }
+
+/* Hinweis-Karten: neuer Block, Laufplan fortsetzen, Backup-Erinnerung */
+.next-block { background: var(--surface); border: 1px solid var(--line); border-left: 3px solid var(--done); border-radius: var(--r); padding: 14px 16px; display: grid; gap: 12px; }
+.next-block p { margin: 4px 0 0; }
+
+/* Kraft-Fortschritt */
+.prog-box { border-top: 1px solid var(--line); padding-top: 12px; }
+.prog-box .sec-h { margin-bottom: 4px; }
+.prog-box h3 { margin: 0; font-size: .74rem; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.prog-box p { margin: 0; }
+.prog-box .spark { height: 44px; margin: 6px 0; }
+.prog-list > div { align-items: flex-start; }
+.prog-list .spark { height: 28px; margin-top: 6px; }
+.prog-list .end { display: grid; justify-items: end; gap: 2px; white-space: nowrap; }
+.prog-list .end b { color: var(--ink); font-size: .9rem; }
+.prog-list .end small.up { color: var(--done); font-weight: 600; }
+
+/* Kurze Hinweise unten */
+.toast { pointer-events: none; position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 84px); transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: .88rem; width: max-content; max-width: calc(100% - 32px); z-index: 50; box-shadow: 0 6px 20px rgb(0 0 0 / .2); }

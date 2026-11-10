@@ -6,7 +6,8 @@ const pad = n => String(n).padStart(2, "0");
 const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 // ---------- Backup ----------
-export const BACKUP_V = 1;
+// 2: Log je Block mit Übung („block-woche-tag-reihe“); Backups mit 1 stellt die App beim Laden um
+export const BACKUP_V = 2;
 export const exportBackup = (S, now = new Date()) => JSON.stringify({ app: "satzwerk", v: BACKUP_V, date: now.toISOString(), data: S });
 export const backupName = (now = new Date()) => `satzwerk-backup-${ymd(now)}.json`;
 

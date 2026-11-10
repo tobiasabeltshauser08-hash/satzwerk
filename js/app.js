@@ -1,4 +1,4 @@
-import { QUESTIONS, DEFAULT, label, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG } from "./data.js";
+import { QUESTIONS, DEFAULT, label, SCHEME, WEEKS, WEEKDAYS, WEEKDAYS_LONG, EX } from "./data.js";
 import { buildPlan, prescription, minutes, cardioItems, propOf, trainingDays, suggestLoad } from "./plan.js";
 import { warmupFor, stretchFor, mobMinutes } from "./mobility.js";
 import { exportBackup, backupName, parseBackup, icsReminders, icsName } from "./backup.js";
@@ -7,6 +7,7 @@ import { HOWTO } from "./howto.js";
 import { ACTIVITIES, actLabel, RPE, WEEK_GOAL, INTENSE_RPE, normalize, pace, summary } from "./endurance.js";
 import { simplify, encodeTrack, decodeTrack, bestEfforts, bestOf, isRecord, trackShape } from "./track.js";
 import { hrZones, segZone, sessZone, normBody, bodyStats, nutrition } from "./health.js";
+import { migrateLog, lastEntry as findLast, key as logKey, mondayOf, shouldAdvance, progressOf, progressList, loggedIds, backupDue, nextRunPlan } from "./progress.js";
 import { RUN_GOALS, RUN_LEVELS, RUN_WEEKS, runPhase, SESSIONS, SEG, buildRunWeek, segAt, totalSec, targetPace, fmtPace, parseTime, trackAdd, trackResume, kmStats, MAX_ACC } from "./run.js";
 
 const KEY = "satzwerk-v3";
@@ -27,13 +28,29 @@ try { S = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
 if (!S || !S.profile) S = null;
 else S = { overrides: {}, log: {}, week: 0, day: null, history: [], active: null, cardio: [], run: { p: null, week: 0, done: {} }, runActive: null, body: [], health: {}, ...S };
 if (S) S.settings = { voice: true, wake: true, remind: "18:00", ...S.settings };
-const save = () => { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) {} };
+const EX_BY_ID = Object.fromEntries(EX.map(e => [e.id, e]));
+// Speichern; schlägt es fehl (Speicher voll oder gesperrt), einmal deutlich warnen
+let saveWarned = false;
+const save = () => {
+  try { localStorage.setItem(KEY, JSON.stringify(S)); }
+  catch (e) { if (!saveWarned) { saveWarned = true; toast("Speichern fehlgeschlagen – der Speicher ist voll oder gesperrt. Bitte unter „Verlauf“ ein Backup speichern.", 8000); } }
+};
 let tab = "heute";
 
 const plan = () => buildPlan(S.profile, S.overrides);
-const rec = (w, d, r) => S.log[`${w}-${d}-${r}`] || { sets: [], kg: "", reps: [] };
-const recW = (w, d, r) => S.log[`${w}-${d}-${r}`] || (S.log[`${w}-${d}-${r}`] = { sets: [], kg: "", reps: [] });
+// Log je Block: „block-woche-tag-reihe“ (siehe progress.js)
+const rec = (w, d, r) => S.log[logKey(S.block, w, d, r)] || { sets: [], kg: "", reps: [] };
+const recW = (w, d, r) => S.log[logKey(S.block, w, d, r)] || (S.log[logKey(S.block, w, d, r)] = { sets: [], kg: "", reps: [] });
 const todayIdx = () => (new Date().getDay() + 6) % 7;
+const todayKey = () => day0(new Date());
+// Altes Log (bis v8) umstellen; die Übung je Stelle kommt aus dem aktuellen Plan
+function upgrade() {
+  if (!S) return;
+  const pl = plan();
+  migrateLog(S, (d, r) => pl.days[d]?.rows?.[r]?.ex.id);
+  if (!S.weekSince) S.weekSince = mondayOf(new Date());
+  if (S.run && !S.run.since) S.run.since = mondayOf(new Date());
+}
 
 function dayProgress(day, di, w) {
   let t = 0, d = 0;
@@ -45,26 +62,53 @@ function dayProgress(day, di, w) {
   return { t, d, ok: t > 0 && d >= t };
 }
 function selectedDay(pl) {
-  if (S.day != null && S.day < pl.days.length) return S.day;
+  if (S.day != null && S.day < pl.days.length && S.dayAt === todayKey()) return S.day;
   const i = pl.days.findIndex(d => d.wd >= todayIdx());
   return i < 0 ? 0 : i;
 }
-// Gewicht aus der letzten Woche mit Eintrag
-function lastEntry(w, di, ri) {
-  for (let x = w - 1; x >= 0; x--) { const r = rec(x, di, ri); if (r.kg || r.reps.some(Boolean)) return { w: x, ...r }; }
-  return null;
-}
+// Letzter Eintrag derselben Übung (frühere Wochen, dann frühere Blöcke)
+const lastEntry = (w, di, ri, id) => findLast(S.log, { b: S.block, w, di, ri, id });
+const lastLabel = l => l.b === S.block ? `Woche ${l.w + 1}` : `Block ${l.b + 1}, Woche ${l.w + 1}`;
 const hasWeight = ex => ["kb", "kh", "lh"].some(t => ex.t.includes(t));
 const kgStep = ex => ex.t.includes("kb") ? 2 : ex.t.includes("lh") ? 2.5 : 1;
 const kgStart = ex => ex.t.includes("kb") ? 8 : ex.t.includes("lh") ? 20 : 5;
+
+// ---------- Wochen- und Blockwechsel ----------
+// Neue Kalenderwoche und in der alten Woche trainiert → automatisch eine Woche weiter (Kraft und Laufplan).
+// Nach dem Deload (Woche 4) startet ein neuer Block erst auf Knopfdruck.
+function autoAdvance() {
+  if (P || R) return;
+  const now = new Date(), pl = plan();
+  const liftTrained = pl.days.some((d, di) => dayProgress(d, di, S.week).d > 0);
+  if (shouldAdvance({ week: S.week, last: 3, since: S.weekSince, trained: liftTrained, now })) {
+    S.week++; S.weekSince = mondayOf(now); S.day = null;
+    if (S.active && S.active.w !== S.week) S.active = null;
+    save(); toast(`Neue Woche: Woche ${S.week + 1} · ${WEEKS[S.week].n}`);
+  }
+  if (S.run.p) {
+    const runTrained = runWeek(S.run.week).some((_, i) => runDone(S.run.week, i));
+    if (shouldAdvance({ week: S.run.week, last: RUN_WEEKS - 1, since: S.run.since, trained: runTrained, now })) {
+      S.run.week++; S.run.since = mondayOf(now); save();
+    }
+  }
+}
+function newBlock() {
+  S.block++; S.week = 0; S.weekSince = mondayOf(new Date()); S.day = null; S.active = null;
+  save(); toast(`Block ${S.block + 1} gestartet – die Vorschläge bauen auf deiner Woche 3 auf`);
+}
+const blockDone = () => { const pl = plan(); return S.week === 3 && pl.days.every((d, di) => dayProgress(d, di, 3).ok); };
+const blockCard = () => S.week !== 3 ? "" : `<section class="next-block"><div><b>${blockDone() ? "Block geschafft" : "Deload-Woche"}</b>
+  <p class="hint">${blockDone() ? "Starte den nächsten 4-Wochen-Block. Die Gewichtsvorschläge bauen auf deiner Woche 3 auf." : "Nach dieser Woche startest du hier den nächsten Block. Du kannst auch jetzt schon wechseln."}</p></div>
+  <button type="button" class="btn${blockDone() ? "" : " sec"}" data-act="new-block">Neuen Block starten</button></section>`;
 
 // ---------- Hauptansicht ----------
 function render() {
   if (!S) return openWizard();
   $("#app").hidden = false;
   $("#wizard").hidden = true;
+  autoAdvance();
   const w = S.week;
-  $("#top-sub").textContent = tab === "laufen" ? (S.run.p ? `Laufplan · Woche ${S.run.week + 1} von ${RUN_WEEKS} · ${runPhase(S.run.p.goal, S.run.week)}` : "Laufplan") : `Woche ${w + 1} von 4 · ${WEEKS[w].n}`;
+  $("#top-sub").textContent = tab === "laufen" ? (S.run.p ? `Laufplan · Woche ${S.run.week + 1} von ${RUN_WEEKS} · ${runPhase(S.run.p.goal, S.run.week)}` : "Freie Läufe") : `${S.block ? `Block ${S.block + 1} · ` : ""}Woche ${w + 1} von 4 · ${WEEKS[w].n}`;
   document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-current", b.dataset.tab === tab ? "page" : "false"));
   $("#view").innerHTML = tab === "heute" ? viewToday() : tab === "woche" ? viewWeek() : tab === "laufen" ? viewRun() : viewHistory();
   mountFigures($("#view"));
@@ -72,7 +116,7 @@ function render() {
 
 function viewToday() {
   const pl = plan(), w = S.week, sel = selectedDay(pl), day = pl.days[sel], pr = dayProgress(day, sel, w);
-  const active = S.active && S.active.w === w && S.active.di === sel;
+  const active = S.active && S.active.b === S.block && S.active.w === w && S.active.di === sel;
   const btn = active ? "Training fortsetzen" : pr.ok ? "Nochmal trainieren" : pr.d ? "Weiter trainieren" : "Training starten";
   const nEx = day.kind === "cardio" ? cardioItems(day, w, S.profile).length : day.rows.length;
   const firstFig = day.kind === "cardio" ? figure("carry", null) : figure(day.rows[0].ex.a, propOf(day.rows[0].ex));
@@ -113,20 +157,24 @@ function viewToday() {
     if (day.fin) h += `<div class="fin-card"><b>Finisher</b>${esc(day.fin)}</div>`;
   }
   h += `</div></section><p class="note"><strong>${WEEKS[w].n}:</strong> ${WEEKS[w].t}</p>`;
-  return h;
+  return backupCard() + h + blockCard();
 }
+const backupCard = () => !backupDue({ history: S.history, lastBackup: S.settings.lastBackup, snooze: S.settings.backupSnooze }) ? "" :
+  `<section class="next-block"><div><b>Zeit für ein Backup</b><p class="hint">Deine Trainings liegen nur auf diesem Gerät. ${S.settings.lastBackup ? `Letztes Backup: ${new Date(S.settings.lastBackup).toLocaleDateString("de-DE")}.` : "Du hast noch kein Backup gespeichert."}</p></div>
+  <div class="btns"><button type="button" class="btn" data-act="export">Backup speichern</button><button type="button" class="btn sec" data-act="backup-later">Später</button></div></section>`;
 
 function viewWeek() {
   const pl = plan(), w = S.week, sc = SCHEME[S.profile.goal];
   const prog = WEEKS.map((_, wi) => pl.days.reduce((a, d, di) => { const x = dayProgress(d, di, wi); return { t: a.t + x.t, d: a.d + x.d }; }, { t: 0, d: 0 }));
   return `
-  <section><div class="sec-h"><h2>4-Wochen-Block</h2></div>
+  <section><div class="sec-h"><h2>4-Wochen-Block${S.block ? ` ${S.block + 1}` : ""}</h2><span>Woche wechselt montags automatisch</span></div>
     <div class="weeks">${WEEKS.map((wk, wi) => {
       const pc = prog[wi].t ? Math.round(prog[wi].d / prog[wi].t * 100) : 0;
       return `<button type="button" class="wk" data-week="${wi}" aria-pressed="${wi === w}"><span class="n">W${wi + 1}</span><span class="l">${wk.n}</span><span class="bar"><i style="width:${pc}%"></i></span></button>`;
     }).join("")}</div>
   </section>
   <p class="note"><strong>${WEEKS[w].n}:</strong> ${WEEKS[w].t}</p>
+  ${blockCard()}
   <section><div class="sec-h"><h2>Woche ${w + 1}</h2><span>${esc(pl.split)}</span></div>
     <div class="rowlist">${WEEKDAYS.map((wd, i) => {
       const di = pl.days.findIndex(d => d.wd === i);
@@ -156,6 +204,7 @@ function viewHistory() {
       <div><small>Sätze</small><span class="big">${tot.sets}</span></div>
       <div><small>Bewegt</small><span class="big">${Math.round(tot.vol).toLocaleString("de-DE")} kg</span></div>
     </div></section>
+  ${viewStrength()}
   ${viewCardio()}
   ${viewBody()}
   <section><div class="sec-h"><h2>Letzte Trainings</h2></div>`;
@@ -178,6 +227,15 @@ function viewHistory() {
   </section>
   ${viewSettings()}`;
   return h;
+}
+
+function viewStrength() {
+  const list = progressList(S.log, loggedIds(S.log), id => EX_BY_ID[id]?.u === "s").filter(x => EX_BY_ID[x.id]);
+  if (!list.length) return "";
+  return `<section><div class="sec-h"><h2>Kraft-Fortschritt</h2><span>seit der ersten Woche</span></div>
+    <div class="rowlist prog-list">${list.slice(0, 12).map(x => `<div><span class="mid"><b>${esc(EX_BY_ID[x.id].n)}</b><small>${x.unit === "kg" ? "geschätztes 1RM" : x.unit === "s" ? "längste Haltezeit" : "meiste Wdh."} · ${x.n} ${x.n === 1 ? "Woche" : "Wochen"}</small>${progSpark(x.points, x.unit)}</span>
+      <span class="end"><b>${numDe(x.now)} ${x.unit}</b>${x.n > 1 ? `<small class="${x.change > 0 ? "up" : ""}">${x.change > 0 ? "+" : ""}${numDe(x.change)}</small>` : ""}</span></div>`).join("")}</div>
+  </section>`;
 }
 
 // ---------- Einstellungen, Erinnerungen, Datensicherung ----------
@@ -234,7 +292,7 @@ function settingsClick(t, a) {
   }
   if (a === "import") $("#import-file").click();
   if (a === "import-yes" && importData) {
-    S = { body: [], health: {}, ...importData }; importData = null; save(); tab = "heute"; render(); window.scrollTo(0, 0);
+    S = { body: [], health: {}, ...importData }; importData = null; upgrade(); save(); tab = "heute"; render(); window.scrollTo(0, 0);
   }
   if (a === "import-no") { importData = null; $("#import-box").innerHTML = ""; }
 }
@@ -411,16 +469,18 @@ document.querySelector(".tabs").addEventListener("click", e => {
 $("#view").addEventListener("click", e => {
   const t = e.target.closest("[data-day],[data-week],[data-open-day],[data-ex],[data-act],[data-cardio],[data-rweek],[data-rsess]");
   if (!t) return;
-  if (t.dataset.day) { S.day = +t.dataset.day; save(); render(); return; }
-  if (t.dataset.week) { S.week = +t.dataset.week; save(); render(); return; }
-  if (t.dataset.openDay) { S.day = +t.dataset.openDay; tab = "heute"; save(); render(); window.scrollTo(0, 0); return; }
+  if (t.dataset.day) { S.day = +t.dataset.day; S.dayAt = todayKey(); save(); render(); return; }
+  if (t.dataset.week) { S.week = +t.dataset.week; S.weekSince = mondayOf(new Date()); save(); render(); return; }
+  if (t.dataset.openDay) { S.day = +t.dataset.openDay; S.dayAt = todayKey(); tab = "heute"; save(); render(); window.scrollTo(0, 0); return; }
   if (t.dataset.ex) { openSheet(+t.dataset.ex); return; }
   const a = t.dataset.act;
   if (a === "start") startWorkout();
   if (a === "wizard") openWizard();
   if (a === "reset") $("#reset-box").innerHTML = `<div class="confirm" style="margin-top:12px"><p>Alle abgehakten Sätze, Gewichte, der Verlauf, die Ausdauer-Einträge und die Körperwerte werden gelöscht.</p><div class="btns"><button type="button" class="btn warn" data-act="reset-yes">Endgültig löschen</button><button type="button" class="btn sec" data-act="reset-no">Abbrechen</button></div></div>`;
   if (a === "reset-no") $("#reset-box").innerHTML = "";
-  if (a === "reset-yes") { S.log = {}; S.history = []; S.cardio = []; S.body = []; S.active = null; S.week = 0; S.run.done = {}; S.run.week = 0; S.runActive = null; save(); render(); }
+  if (a === "reset-yes") { S.log = {}; S.block = 0; S.history = []; S.cardio = []; S.body = []; S.active = null; S.week = 0; S.weekSince = mondayOf(new Date()); S.run.done = {}; S.run.week = 0; S.runActive = null; save(); render(); }
+  if (a === "new-block") { newBlock(); render(); window.scrollTo(0, 0); }
+  if (a === "backup-later") { S.settings.backupSnooze = new Date().toISOString(); save(); render(); }
   if (a === "cardio-add") openCardioSheet(null);
   if (a === "body-add") openBodySheet(null);
   if (a === "body-list") openBodyList();
@@ -441,6 +501,26 @@ function howHTML(ex) {
     ${h.f ? `<div class="how-more"><h3>Typische Fehler</h3><ul>${h.f.map(t => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
     ${h.v ? `<div class="how-more"><h3>Anpassen</h3><p>${esc(h.v)}</p></div>` : ""}`;
 }
+// Kraft-Fortschritt einer Übung: kleine Kurve über alle Wochen und Blöcke, mit geschätztem 1RM
+const numDe = v => String(v).replace(".", ",");
+function progSpark(points, unit) {
+  if (points.length < 2) return "";
+  const vs = points.map(p => p.v), lo = Math.min(...vs), hi = Math.max(...vs), rng = hi - lo || 1, n = points.length - 1;
+  const xy = points.map((p, i) => [i / n * 300, 50 - (p.v - lo) / rng * 44]);
+  const d = xy.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(1)} ${y.toFixed(1)}`).join("");
+  const [lx, ly] = xy[n];
+  return `<svg class="spark" viewBox="-4 0 308 56" preserveAspectRatio="none" role="img" aria-label="Verlauf von ${numDe(vs[0])} auf ${numDe(vs[n])} ${unit}"><path d="${d}"/><circle cx="${lx}" cy="${ly}" r="3"/></svg>`;
+}
+function progressHTML(ex) {
+  const { unit, points } = progressOf(S.log, ex.id, ex.u === "s");
+  if (!points.length) return "";
+  const now = points[points.length - 1], ch = Math.round((now.v - points[0].v) * 10) / 10;
+  const what = unit === "kg" ? "Geschätztes Maximalgewicht (1 Wdh.)" : unit === "s" ? "Längste Haltezeit" : "Meiste Wiederholungen";
+  return `<div class="prog-box"><div class="sec-h"><h3>Fortschritt</h3><span>${points.length} ${points.length === 1 ? "Woche" : "Wochen"}</span></div>
+    <p><b>${numDe(now.v)} ${unit}</b> <span class="hint">${what}${points.length > 1 && ch ? ` · ${ch > 0 ? "+" : ""}${numDe(ch)} ${unit} seit Beginn` : ""}</span></p>
+    ${progSpark(points, unit)}
+    ${unit === "kg" ? `<p class="hint">Berechnet aus Gewicht und Wiederholungen (Epley-Formel). Kein Test nötig – nur ein Richtwert. Deload-Wochen zählen nicht.</p>` : ""}</div>`;
+}
 let sheetRi = null;
 function sheetHTML(ex, x, extra = "") {
   return `<div class="stage">${figure(ex.a, propOf(ex))}</div>
@@ -451,9 +531,9 @@ function sheetHTML(ex, x, extra = "") {
 function openSheet(ri) {
   sheetRi = ri;
   const pl = plan(), di = selectedDay(pl), r = pl.days[di].rows[ri], x = prescription(S.profile, r, S.week);
-  const last = lastEntry(S.week + 1, di, ri);
+  const last = lastEntry(S.week + 1, di, ri, r.ex.id);
   $("#sheet").innerHTML = `<div class="sheet-in" role="dialog" aria-modal="true" aria-label="${esc(r.ex.n)}"><div class="grab"></div>
-    ${sheetHTML(r.ex, x, last && last.kg ? `<p class="last">Zuletzt: ${esc(last.kg)} kg${last.reps.some(Boolean) ? " × " + last.reps.filter(Boolean).join(", ") : ""} (Woche ${last.w + 1})</p>` : "")}
+    ${sheetHTML(r.ex, x, last && last.kg ? `<p class="last">Zuletzt: ${esc(last.kg)} kg${last.reps.some(Boolean) ? " × " + last.reps.filter(Boolean).join(", ") : ""} (${lastLabel(last)})</p>` : "") + progressHTML(r.ex)}
     <div class="btns">${r.alt ? `<button type="button" class="btn sec" data-act="swap">Andere Übung</button>` : ""}<button type="button" class="btn" data-act="close" style="flex:1">Schließen</button></div>
   </div>`;
   $("#sheet").hidden = false;
@@ -526,7 +606,7 @@ function renderWizard() {
     <div class="wz-opts${Q.multi ? " cols" : ""}" role="${Q.multi ? "group" : "radiogroup"}" aria-labelledby="wz-q">
       ${Q.o.map(([v, t, d]) => `<label class="opt"><input type="${type}" name="${Q.f}" id="${Q.f}-${v}" value="${v}"${isOn(v) ? " checked" : ""}><span><b>${t}</b>${d ? `<small>${d}</small>` : ""}</span></label>`).join("")}
     </div>
-    ${last && S && Object.keys(S.log).length ? `<p class="hint">Ein neuer Plan setzt die abgehakten Sätze zurück. Dein Verlauf bleibt erhalten.</p>` : ""}
+    ${last && S && Object.keys(S.log).length ? `<p class="hint">Der neue Plan startet als neuer Block in Woche 1. Verlauf, Gewichte und Fortschritt bleiben erhalten.</p>` : ""}
     ${Q.min ? `<p class="hint" id="wz-count" aria-live="polite"></p>` : ""}
     <div class="wz-nav">
       ${step > 0 ? `<button type="button" class="btn sec" data-act="back">Zurück</button>` : S ? `<button type="button" class="btn sec" data-act="cancel">Abbrechen</button>` : ""}
@@ -560,7 +640,8 @@ $("#wizard").addEventListener("submit", e => {
   if (!stepValid()) return;
   if (step < QUESTIONS.length - 1) { step++; renderWizard(); return; }
   draft.days = String(draft.wd.length);
-  S = { profile: draft, overrides: {}, log: {}, week: 0, day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [], run: S ? S.run : { p: null, week: 0, done: {} }, runActive: S ? S.runActive : null, body: S ? S.body : [], health: S ? S.health : {}, settings: { voice: true, wake: true, remind: "18:00", ...(S ? S.settings : {}) } };
+  const hadLog = S && Object.keys(S.log).some(k => k.startsWith(S.block + "-"));
+  S = { ...(S || {}), profile: draft, overrides: {}, log: S ? S.log : {}, logV: 2, block: S ? (S.block || 0) + (hadLog ? 1 : 0) : 0, week: 0, weekSince: mondayOf(new Date()), day: null, history: S ? S.history : [], active: null, cardio: S ? S.cardio : [], run: S ? S.run : { p: null, week: 0, done: {} }, runActive: S ? S.runActive : null, body: S ? S.body : [], health: S ? S.health : {}, settings: { voice: true, wake: true, remind: "18:00", ...(S ? S.settings : {}) } };
   save();
   tab = "heute";
   render();
@@ -596,7 +677,7 @@ function buildSteps(day, w) {
 
 function startWorkout() {
   const pl = plan(), w = S.week, di = selectedDay(pl), day = pl.days[di];
-  const resume = S.active && S.active.w === w && S.active.di === di;
+  const resume = S.active && S.active.b === S.block && S.active.w === w && S.active.di === di;
   P = { w, di, day, steps: buildSteps(day, w), idx: 0, elapsed: 0, paused: false, left: 0, total: 0, timed: false, sw: 0, swOn: false, confirm: false, form: {} };
   if (resume) P.elapsed = S.active.elapsed || 0;
   if (resume && S.active.v === 2) P.idx = Math.min(S.active.idx, P.steps.length - 1);
@@ -606,6 +687,8 @@ function startWorkout() {
     const anyDone = P.steps.some(s => s.k === "set" && rec(w, di, s.ri).sets[s.si]);
     if (anyDone && !dayProgress(day, di, w).ok && first > 0) P.idx = first;
   }
+  // Pause bzw. Dehnen mit der restlichen Zeit fortsetzen
+  if (resume && S.active.left != null && P.idx === S.active.idx) P.resumeLeft = Math.max(0, S.active.left - (S.active.paused ? 0 : (Date.now() - S.active.at) / 1000));
   openPlayer();
 }
 
@@ -625,15 +708,27 @@ function startStretch(day) {
   openPlayer();
 }
 
-function persistActive() { if (P.only) return; S.active = { v: 2, w: P.w, di: P.di, idx: P.idx, elapsed: P.elapsed }; save(); }
+// Restzeit von Pause/Dehnen mit Zeitstempel sichern, damit sie nach dem Neuladen weiterläuft
+function persistActive() {
+  if (P.only) return;
+  const s = P.steps[P.idx], timer = (s.k === "rest" || s.k === "mob") && P.total;
+  S.active = { v: 2, b: S.block, w: P.w, di: P.di, idx: P.idx, elapsed: P.elapsed, ...(timer ? { left: P.left, at: Date.now(), paused: P.paused } : {}) };
+  save();
+}
 
 function enterStep() {
   const s = P.steps[P.idx];
   P.timed = false; P.left = 0; P.total = 0; P.sw = 0; P.swOn = false; P.confirm = false;
   if (s.k === "rest") { P.left = P.total = s.sec; }
   if (s.k === "mob") { P.left = P.total = s.it.sec; P.half = false; }
+  // nach dem Neuladen: Pause bzw. Dehnen mit der restlichen Zeit fortsetzen (einmalig)
+  if (P.resumeLeft != null && (s.k === "rest" || s.k === "mob") && P.total) {
+    P.left = Math.min(P.total, P.resumeLeft);
+    if (s.k === "mob" && s.it.side && P.left <= P.total / 2) P.half = true;
+  }
+  P.resumeLeft = null;
   if (s.k === "set") {
-    const r = P.day.rows[s.ri], x = prescription(S.profile, r, P.w), rc = rec(P.w, P.di, s.ri), last = lastEntry(P.w, P.di, s.ri);
+    const r = P.day.rows[s.ri], x = prescription(S.profile, r, P.w), rc = rec(P.w, P.di, s.ri), last = lastEntry(P.w, P.di, s.ri, r.ex.id);
     P.sug = suggestLoad(x, last, P.w, kgStep(r.ex));
     P.form = { kg: rc.kg || (P.sug && P.sug.kg) || (last && last.kg) || (hasWeight(r.ex) ? String(kgStart(r.ex)) : ""), reps: rc.reps[s.si] || (s.si > 0 && rc.reps[s.si - 1]) || (P.sug && P.sug.reps) || x.hi };
     if (x.timed) { P.left = P.total = (P.sug && P.sug.reps) || x.lo; }
@@ -660,7 +755,6 @@ function phaseEnd(from) {
   let i = from;
   while (i < P.steps.length - 1 && P.steps[i].k === "mob" && P.steps[i].ph === P.steps[from].ph) i++;
   return i;
-  return null;
 }
 
 function renderPlayer() {
@@ -681,19 +775,20 @@ function renderPlayer() {
       <div class="pl-actions"><button type="button" class="btn-go" data-p="next">${last ? (warm ? "Los geht's" : "Fertig") : "Weiter"}</button>
         ${last ? "" : `<button type="button" class="btn sec block" data-p="skip-phase">${warm ? "Aufwärmen" : "Dehnen"} überspringen</button>`}</div>`;
   } else if (s.k === "set") {
-    const r = P.day.rows[s.ri], ex = r.ex, x = prescription(S.profile, r, w), last = lastEntry(w, P.di, s.ri);
+    const r = P.day.rows[s.ri], ex = r.ex, x = prescription(S.profile, r, w), last = lastEntry(w, P.di, s.ri, ex.id);
     const first = s.si === 0;
     body = `<div><p class="pl-eyebrow">Übung ${s.ri + 1} von ${P.day.rows.length}</p><h2 class="pl-title">${esc(ex.n)}</h2></div>
       <div class="target"><span class="big">${x.timed ? x.reps.replace(" s", "") : x.reps}</span><span class="unit">${x.timed ? "Sekunden" : "Wiederholungen"}${ex.side ? " pro Seite" : ""}</span></div>
       <div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><div class="dots" aria-label="Satz ${s.si + 1} von ${x.sets}">${Array.from({ length: x.sets }, (_, i) => `<i class="${i < s.si ? "on" : ""}"${i === s.si ? ' style="background:var(--muted);border-color:var(--muted)"' : ""}></i>`).join("")}</div><span class="chip">Satz ${s.si + 1} / ${x.sets} · RIR ${x.rir}</span></div>
       <div class="stage">${figure(ex.a, propOf(ex))}</div>
+      ${r.alt && first && !rec(w, P.di, s.ri).sets.some(Boolean) ? `<button type="button" class="btn sec block" data-p="swap">Andere Übung (Gerät belegt, zwickt …)</button>` : ""}
       <details class="how-box"${first ? " open" : ""}><summary>So geht's</summary><div class="how-body">${howHTML(ex)}</div></details>
       ${x.timed ? ringHTML("Halten") : ""}
       <div class="log">
         ${hasWeight(ex) ? stepper("kg", "kg", P.form.kg || "–") : ""}
         ${stepper("reps", x.timed ? "Sekunden" : "Wdh.", P.form.reps)}
       </div>
-      ${last ? `<p class="last">Woche ${last.w + 1}: ${last.kg ? esc(last.kg.replace(".", ",")) + " kg · " : ""}${last.reps.filter(Boolean).join(" / ") || "–"}</p>` : ""}
+      ${last ? `<p class="last">${lastLabel(last)}: ${last.kg ? esc(last.kg.replace(".", ",")) + " kg · " : ""}${last.reps.filter(Boolean).join(" / ") || "–"}</p>` : ""}
       ${P.sug && first ? `<p class="sugg${P.sug.up ? " up" : ""}">${P.sug.up ? "↑ " : ""}${esc(P.sug.txt)}</p>` : ""}
       <div class="pl-actions">
         ${x.timed ? `<button type="button" class="btn sec block" data-p="timer">${P.timed ? "Timer stoppen" : `Timer starten (${P.left} s)`}</button>` : ""}
@@ -739,14 +834,14 @@ function renderPlayer() {
         : `<div><small>Wiederholungen</small><span class="big">${h.reps}</span></div>
         <div><small>Bewegt</small><span class="big">${Math.round(h.vol).toLocaleString("de-DE")} kg</span></div>`}
       </div>
-      <p class="note">${w < 3 ? "Nächste Woche: " + WEEKS[w + 1].t : "Block geschafft. Starte einen neuen Block mit etwas mehr Gewicht."}</p>
-      <div class="pl-actions"><button type="button" class="btn-go" data-p="close">Fertig</button></div>`;
+      <p class="note">${w < 3 ? "Nächste Woche: " + WEEKS[w + 1].t : blockDone() ? "Block geschafft. Im nächsten Block bauen die Gewichtsvorschläge auf deiner Woche 3 auf." : "Deload-Woche. Danach startest du den nächsten Block."}</p>
+      <div class="pl-actions">${w === 3 && blockDone() ? `<button type="button" class="btn-go" data-p="new-block">Neuen Block starten</button><button type="button" class="btn sec block" data-p="close">Später</button>` : `<button type="button" class="btn-go" data-p="close">Fertig</button>`}</div>`;
   }
   const done = s.k === "done";
   $("#player").innerHTML = `<div class="pl">
     <div class="pl-top">
       <div class="pl-side">${done ? "" : `<button type="button" class="icon-btn" data-p="quit" aria-label="${P.only ? "Dehnen beenden" : "Training beenden"}">${ICON.close}</button>`}${voiceBtn("p")}</div>
-      <button type="button" class="clock${P.paused ? " paused" : ""}" data-p="pause" aria-label="${P.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${done ? "disabled" : ""}>${P.paused ? ICON.play : ICON.pause}<span id="p-clock">${fmt(P.elapsed)}</span></button>
+      <button type="button" class="clock${P.paused ? " paused" : ""}" data-p="pause" aria-label="${done ? "Trainingszeit" : P.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${done ? "disabled" : ""}>${P.paused ? ICON.play : ICON.pause}<span id="p-clock">${fmt(P.elapsed)}</span></button>
       <div class="pl-side end">${wakeBadge()}${P.idx > 0 && !done ? `<button type="button" class="icon-btn" data-p="prev" aria-label="Zurück">${ICON.back}</button>` : ""}</div>
     </div>
     ${done ? "" : segs()}
@@ -800,13 +895,14 @@ function tick() {
       else if (s.k === "set") completeSet();
     }
   }
-  if (Math.round(P.elapsed) % 5 === 0) persistActive();
+  if (Math.floor(P.elapsed / 5) !== Math.floor((P.elapsed - dt) / 5)) persistActive();
 }
 
 function completeSet() {
   const s = P.steps[P.idx], r = rec(P.w, P.di, s.ri);
   const x = recW(P.w, P.di, s.ri);
   x.sets[s.si] = true;
+  x.id = P.day.rows[s.ri].ex.id; x.date = todayKey();
   x.kg = P.form.kg && P.form.kg !== "–" ? String(P.form.kg) : r.kg;
   x.reps[s.si] = +P.form.reps || 0;
   save();
@@ -828,7 +924,7 @@ function finishWorkout() {
     x.sets.forEach((ok, si) => { if (!ok) return; sets++; const n = x.reps[si] || 0; if (r.ex.u !== "s") { reps += n; vol += (parseFloat(x.kg) || 0) * n; } });
   });
   if (day.kind === "cardio") sets = cardioItems(day, w, S.profile).length;
-  const h = { date: new Date().toISOString(), name: day.name, w, dur: Math.round(P.elapsed), sets, reps, vol };
+  const h = { date: new Date().toISOString(), name: day.name, b: S.block, w, dur: Math.round(P.elapsed), sets, reps, vol };
   if (P.clog) h.cardio = { min: P.clog.min, km: P.clog.km, rpe: P.clog.rpe };
   S.history.push(h);
   S.active = null;
@@ -861,6 +957,22 @@ $("#player").addEventListener("click", e => {
     case "quit-no": P.confirm = false; renderPlayer(); break;
     case "quit-yes": persistActive(); try { window.speechSynthesis && speechSynthesis.cancel(); } catch (e) {} closePlayer(); break;
     case "close": closePlayer(); break;
+    case "new-block": newBlock(); closePlayer(); break;
+    case "swap": {
+      // nächste Alternative an dieser Stelle; Ablauf bleibt gleich (gleiche Satzzahl), nur die Übung wechselt
+      const slot = P.day.rows[s.ri].slot, k = `${P.di}-${slot}`, before = P.day.rows.map(r => r.slot).join();
+      S.overrides[k] = (S.overrides[k] || 0) + 1; save();
+      P.day = plan().days[P.di];
+      // Kann der Tausch eine andere Reihe verdrängen (Dublette), stimmen die Schritte nicht mehr: neu aufbauen
+      if (P.day.rows.map(r => r.slot).join() !== before) {
+        P.steps = buildSteps(P.day, P.w);
+        const ri = Math.max(0, P.day.rows.findIndex(r => r.slot === slot));
+        P.idx = Math.max(0, P.steps.findIndex(x => x.k === "set" && x.ri === ri && x.si === 0));
+      }
+      enterStep();
+      toast("Gilt ab jetzt für diesen Trainingstag. Zurücktauschen: wieder „Andere Übung“ oder im Übungs-Sheet.", 4500);
+      break;
+    }
     case "set-done": completeSet(); break;
     case "timer": P.timed = !P.timed; if (P.timed) say(`Halten, ${durWords(Math.ceil(P.left))}.`); renderPlayer(); break;
     case "plus": P.left += 15; P.total = Math.max(P.total, P.left); updateRing(); break;
@@ -930,19 +1042,27 @@ function runPaceList(segs) {
   }).join("")}</div>`;
 }
 
-function viewRun() {
-  if (!S.run.p || runDraft) return viewRunSetup();
-  const p = S.run.p, w = S.run.week, wk = runWeek(w), ks = kmStats(S.cardio);
-  const doneN = wk.filter((_, i) => runDone(w, i)).length;
-  const goal = RUN_GOALS.find(g => g[0] === p.goal);
-  const nextI = wk.findIndex((_, i) => !runDone(w, i));
-  const act = S.runActive;
-  let h = `<section class="hero km-hero" aria-label="Kilometer">
+// Kilometer und freier Lauf: auch ohne Laufplan
+function kmHero() {
+  const ks = kmStats(S.cardio), act = S.runActive;
+  return `<section class="hero km-hero" aria-label="Kilometer">
     <div><p class="eyebrow">Gelaufen diese Woche</p><p class="km-big"><span>${km1(ks.week)}</span> km</p></div>
     <div class="km-row"><div><small>Gesamt</small><b>${km1(ks.total)} km</b></div><div><small>Dieses Jahr</small><b>${km1(ks.year)} km</b></div><div><small>Längster</small><b>${km1(ks.longest)} km</b></div></div>
     ${act ? `<button type="button" class="btn-hero" data-act="run-resume">${ICON.play}Lauf fortsetzen (${fmt(act.t)})</button>`
       : `<button type="button" class="btn-hero" data-act="run-free">${ICON.play}Freier Lauf mit Stoppuhr</button>`}
-  </section>
+  </section>`;
+}
+function viewRun() {
+  if (runDraft) return viewRunSetup();
+  if (!S.run.p) return kmHero() + viewRunSetup();
+  const p = S.run.p, w = S.run.week, wk = runWeek(w);
+  const doneN = wk.filter((_, i) => runDone(w, i)).length;
+  const goal = RUN_GOALS.find(g => g[0] === p.goal);
+  const nextI = wk.findIndex((_, i) => !runDone(w, i));
+  const planDone = w === RUN_WEEKS - 1 && doneN === wk.length;
+  let h = kmHero() + (planDone || w === RUN_WEEKS - 1 ? `<section class="next-block"><div><b>${planDone ? "Laufplan geschafft" : "Letzte Woche des Plans"}</b>
+    <p class="hint">${planDone ? "Stark! Mach mit einem neuen 8-Wochen-Plan weiter." : "Nach dieser Woche geht es mit einem neuen Plan weiter."} Vorschlag: ${esc(RUN_GOALS.find(g => g[0] === nextRunPlan(p, bestOf(S.cardio)[5000]?.sec).goal)[1])}${bestOf(S.cardio)[5000] ? `, mit deiner 5-km-Bestzeit ${fmt(bestOf(S.cardio)[5000].sec)}` : ""}.</p></div>
+    <button type="button" class="btn${planDone ? "" : " sec"}" data-act="run-next">Nächsten Plan einrichten</button></section>` : "") + `
 
   <section><div class="sec-h"><h2>Laufplan · ${esc(goal[1])}</h2><span>${doneN}/${wk.length} diese Woche</span></div>
     <div class="weeks w8">${Array.from({ length: RUN_WEEKS }, (_, wi) => {
@@ -984,8 +1104,8 @@ function viewRunSetup() {
   const d = runDraft;
   const radios = (f, list) => `<div class="wz-opts">${list.map(([v, t, x]) => `<label class="opt"><input type="radio" name="r-${f}" value="${v}"${d[f] === v ? " checked" : ""}><span><b>${t}</b><small>${x}</small></span></label>`).join("")}</div>`;
   const n = d.wd.length, ok = n >= 2 && n <= 5;
-  return `<section class="run-setup"><div class="sec-h"><h2>Laufplan erstellen</h2></div>
-    <p class="hint">8 Wochen mit konkreten Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche.</p>
+  return `<section class="run-setup"><div class="sec-h"><h2>${d.next ? "Nächster Laufplan" : S.run.p ? "Laufplan ändern" : "Laufplan erstellen"}</h2>${S.run.p ? "" : "<span>optional</span>"}</div>
+    <p class="hint">8 Wochen mit konkreten Einheiten: lockere Läufe, Intervalle, Tempoläufe und ein Longrun pro Woche.${d.next ? " Ziel, Niveau und 5-km-Zeit sind aus deinem letzten Plan vorgeschlagen." : ""}</p>
     <h3 class="q">Was ist dein Ziel?</h3>${radios("goal", RUN_GOALS)}
     <h3 class="q">Wie viel läufst du schon?</h3>${radios("level", RUN_LEVELS)}
     <h3 class="q">An welchen Tagen läufst du?</h3>
@@ -994,7 +1114,7 @@ function viewRunSetup() {
     <h3 class="q">Deine aktuelle 5-km-Zeit <small>(optional)</small></h3>
     <label class="field"><span>Zeit in Minuten, z. B. 28:30</span><input name="r-t5" inputmode="numeric" placeholder="mm:ss" value="${esc(d.t5s || "")}"></label>
     <p class="hint" id="r-err" aria-live="polite">Damit zeigt dir die App für jeden Abschnitt ein Zieltempo pro Kilometer.</p>
-    <div class="btns" style="margin-top:6px">${S.run.p ? `<button type="button" class="btn sec" data-act="run-cancel">Abbrechen</button>` : ""}<button type="button" class="btn" data-act="run-make" style="flex:1"${ok ? "" : " disabled"}>Laufplan erstellen</button></div>
+    <div class="btns" style="margin-top:6px">${S.run.p ? `<button type="button" class="btn sec" data-act="run-cancel">Abbrechen</button>` : ""}<button type="button" class="btn" data-act="run-make" style="flex:1"${ok ? "" : " disabled"}>${d.next ? "Neuen Plan starten" : S.run.p ? "Speichern" : "Laufplan erstellen"}</button></div>
   </section>`;
 }
 
@@ -1008,10 +1128,15 @@ $("#view").addEventListener("change", e => {
 });
 
 function runViewClick(t, a) {
-  if (t.dataset.rweek) { S.run.week = +t.dataset.rweek; save(); render(); return; }
+  if (t.dataset.rweek) { S.run.week = +t.dataset.rweek; S.run.since = mondayOf(new Date()); save(); render(); return; }
   if (t.dataset.rsess) { openRunSheet(+t.dataset.rsess); return; }
   if (a === "run-setup") { runDraft = initRunDraft(); render(); window.scrollTo(0, 0); }
   if (a === "run-cancel") { runDraft = null; render(); }
+  if (a === "run-next") {
+    const n = nextRunPlan(S.run.p, bestOf(S.cardio)[5000]?.sec);
+    runDraft = { ...n, wd: n.wd.map(String), t5s: n.t5 ? fmt(n.t5) : "", next: true };
+    render(); window.scrollTo(0, 0);
+  }
   if (a === "run-free") startRun(null, true);
   if (a === "run-resume") startRun(S.runActive.i, S.runActive.i == null, S.runActive.w);
   if (a === "run-make") {
@@ -1019,7 +1144,11 @@ function runViewClick(t, a) {
     if (raw && !t5) { $("#r-err").textContent = "Bitte die Zeit als Minuten:Sekunden eingeben, zwischen 12:00 und 60:00."; return; }
     const changed = !S.run.p || S.run.p.goal !== runDraft.goal || S.run.p.level !== runDraft.level || S.run.p.wd.join() !== runDraft.wd.join();
     S.run.p = { goal: runDraft.goal, level: runDraft.level, wd: runDraft.wd.map(Number).sort((x, y) => x - y), t5 };
-    if (changed) { S.run.week = 0; S.run.done = {}; }
+    if (changed || runDraft.next) {
+      S.run.week = 0; S.run.done = {}; S.run.since = mondayOf(new Date());
+      // ein wartender Plan-Lauf passt nicht mehr zum neuen Plan: als freien Lauf fortsetzen
+      if (S.runActive && S.runActive.i != null) { S.runActive.i = null; S.runActive.w = null; }
+    }
     runDraft = null; save(); render(); window.scrollTo(0, 0);
   }
 }
@@ -1167,7 +1296,7 @@ function renderRun() {
       <div class="pl-actions"><button type="button" class="btn-go" data-r="stretch">Dehnen</button><button type="button" class="btn sec block" data-r="close">Fertig</button></div>`;
   } else if (R.saving) {
     body = `<div><p class="pl-eyebrow">Lauf speichern</p><h2 class="pl-title">Wie lief's?</h2></div>
-      <div class="kvs"><div><small>Zeit</small><span class="big">${fmt(R.t)}</span></div><div><small>Strecke</small><span class="big">${kmFmt(runM())} km</span></div></div>
+      <div class="kvs"><div><small>Zeit</small><span class="big">${fmt(R.t)}</span></div><div><small>Strecke</small><span class="big">${kmEnd(runM())} km</span></div></div>
       <p class="hint">Strecke und Dauer kannst du noch korrigieren.</p>
       ${cardioForm(R.cform)}
       <div class="pl-actions"><button type="button" class="btn-go" data-r="save">${ICON.check} Speichern</button>
@@ -1205,7 +1334,7 @@ function renderRun() {
   $("#player").innerHTML = `<div class="pl run-pl">
     <div class="pl-top">
       <div class="pl-side">${R.done ? "" : `<button type="button" class="icon-btn" data-r="quit" aria-label="Lauf verwerfen">${ICON.close}</button>`}${voiceBtn("r")}</div>
-      <button type="button" class="clock${R.paused || R.saving ? " paused" : ""}" data-r="pause" aria-label="${R.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${R.saving || R.done ? "disabled" : ""}>${R.paused || R.saving ? ICON.play : ICON.pause}<span id="r-clock">${fmt(R.t)}</span></button>
+      <button type="button" class="clock${R.paused || R.saving ? " paused" : ""}" data-r="pause" aria-label="${R.saving || R.done ? "Laufzeit" : R.paused ? "Stoppuhr fortsetzen" : "Stoppuhr pausieren"}" ${R.saving || R.done ? "disabled" : ""}>${R.paused || R.saving ? ICON.play : ICON.pause}<span id="r-clock">${fmt(R.t)}</span></button>
       <div class="pl-side end">${wakeBadge()}${R.sess && !R.saving && !R.done && R.segI < R.segs.length ? `<button type="button" class="icon-btn" data-r="skip" aria-label="Abschnitt überspringen"><svg viewBox="0 0 24 24"><path d="M6 5l8 7-8 7M18 5v14"/></svg></button>` : ""}</div>
     </div>
     ${body}
@@ -1270,6 +1399,15 @@ $("#player").addEventListener("click", e => {
   }
 });
 
+// ---------- Kurze Hinweise ----------
+function toast(msg, ms = 3200) {
+  document.querySelector(".toast")?.remove();
+  const t = document.createElement("div");
+  t.className = "toast"; t.setAttribute("role", "status"); t.textContent = msg;
+  document.body.append(t);
+  setTimeout(() => t.remove(), ms);
+}
+
 // ---------- Ton, Vibration, Bildschirm an ----------
 function unlockAudio() {
   try { actx = actx || new (window.AudioContext || window.webkitAudioContext)(); if (actx.state === "suspended") actx.resume(); } catch (e) {}
@@ -1333,12 +1471,23 @@ function speakNext() {
 document.addEventListener("visibilitychange", () => {
   if (P && document.visibilityState === "visible") { tick(); requestWake(); }
   if (R && document.visibilityState === "visible") { runTick(); requestWake(); }
+  if (document.visibilityState === "hidden") saveNow();
 });
+// Beim Wegwischen oder Schließen den aktuellen Stand sichern (sonst fehlen bis zu 5 s)
+function saveNow() {
+  if (R && !R.done && !R.saving) persistRun();
+  else if (P && !P.only && P.steps[P.idx].k !== "done") persistActive();
+}
+addEventListener("pagehide", saveNow);
 
 // Laufendes Training nicht durch ein App-Update neu laden
 window.appBusy = () => !!P || !!R;
 
 // ---------- Start ----------
+upgrade();
+if (S) save();
+// Browser bitten, die Daten nicht bei Speichermangel zu löschen
+try { navigator.storage?.persist?.(); } catch (e) {}
 // Ein unterbrochener Lauf (z. B. App geschlossen) wartet im Tab Laufen
 if (S && S.runActive) tab = "laufen";
 render();

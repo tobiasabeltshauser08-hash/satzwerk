@@ -16,7 +16,7 @@ const now = new Date(2026, 10, 9, 10, 30);
 // Export
 {
   const txt = exportBackup(S, now), o = JSON.parse(txt);
-  assert.equal(o.app, 'satzwerk'); assert.equal(o.v, 1);
+  assert.equal(o.app, 'satzwerk'); assert.equal(o.v, 2);
   assert.equal(o.date, now.toISOString());
   assert.deepEqual(o.data, S);
   assert.equal(backupName(now), 'satzwerk-backup-2026-11-09.json');
@@ -79,7 +79,7 @@ const now = new Date(2026, 10, 9, 10, 30);
   err(JSON.stringify({ profile: { ...profile, tools: 'kb' } }), /unvollständig/);
   err(JSON.stringify({ profile: { ...profile, level: 1 } }), /unvollständig/);
   err(JSON.stringify({ profile: { goal: 'fitness' } }), /unvollständig/);
-  err(JSON.stringify({ app: 'satzwerk', v: 2, data: S }), /neueren Version/);
+  err(JSON.stringify({ app: 'satzwerk', v: 3, data: S }), /neueren Version/);
 }
 
 // ---------- iCalendar ----------
